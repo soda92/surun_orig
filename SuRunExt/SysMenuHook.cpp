@@ -1,36 +1,66 @@
+//////////////////////////////////////////////////////////////////////////////
+//
+// This source code is part of SuRun
+//
+// Some sources in this project evolved from Microsoft sample code, some from 
+// other free sources. The Shield Icons are taken from Windows XP Service Pack 
+// 2 (xpsp2res.dll) 
+// 
+// Feel free to use the SuRun sources for your liking.
+// 
+//                                (c) Kay Bruns (http://kay-bruns.de), 2007,08
+//////////////////////////////////////////////////////////////////////////////
+
+#define _WIN32_WINNT 0x0500
+#define WINVER       0x0500
+
 #include <windows.h>
 #include <stdio.h>
 #include <tchar.h>
+#include <Psapi.h>
 #include <shlwapi.h>
+
 #include "SysMenuHook.h"
 #include "../DBGTrace.H"
 #include "../ResStr.h"
 #include "../IsAdmin.h"
+#include "../Helpers.h"
+#include "../Setup.h"
+#include "SuRunExt.h"
 #include "Resource.h"
 
+#pragma comment(lib,"PSAPI")
 #pragma comment(lib,"shlwapi")
+#ifndef _WIN64
+#pragma comment(linker,"/DELAYLOAD:user32.dll")
+#pragma comment(linker,"/DELAYLOAD:gdi32.dll")
+#pragma comment(linker,"/DELAYLOAD:netapi32.dll")
+#pragma comment(linker,"/DELAYLOAD:ole32.dll")
+#pragma comment(linker,"/DELAYLOAD:shell32.dll")
+#pragma comment(linker,"/DELAYLOAD:psapi.dll")
+#pragma comment(linker,"/DELAYLOAD:shlwapi.dll")
+#pragma comment(lib,"Delayimp")
+#endif _WIN64
 
+//////////////////////////////////////////////////////////////////////////////
+//
 // global data within shared data segment to allow sharing across instances
-#pragma data_seg(".SHARDATA")
+//
+//////////////////////////////////////////////////////////////////////////////
+#pragma data_seg(".SHDATA")
 
 HHOOK       g_hookShell = NULL;
 HHOOK       g_hookMenu  = NULL;
-HINSTANCE   g_hInst     = NULL;
-UINT        WM_SYSMH0    = 0;
-UINT        WM_SYSMH1    = 0;
-
-TCHAR sMenuRestart[MAX_PATH];
-TCHAR sMenuStart[MAX_PATH];
-TCHAR sFileNotFound[MAX_PATH];
-TCHAR sSuRun[MAX_PATH];
-TCHAR sErr[MAX_PATH];
-TCHAR sTip[MAX_PATH];
 
 #pragma data_seg()
-#pragma comment(linker, "/section:.SHARDATA,rws")
+#pragma comment(linker, "/section:.SHDATA,RWS")
 
-// extern "C" prevents name mangling so that procedures can be referenced from outside the DLL
-extern "C" static LRESULT CALLBACK ShellProc(int nCode, WPARAM wParam, LPARAM lParam)
+extern HINSTANCE l_hInst; //the local Dll instance
+
+extern UINT      WM_SYSMH0;
+extern UINT      WM_SYSMH1;
+
+LRESULT CALLBACK ShellProc(int nCode, WPARAM wParam, LPARAM lParam)
 {
   if(nCode>=0)
   {
@@ -52,11 +82,14 @@ extern "C" static LRESULT CALLBACK ShellProc(int nCode, WPARAM wParam, LPARAM lP
     case WM_INITMENUPOPUP:
       if ((HIWORD(wps->lParam)==TRUE) 
         && IsMenu((HMENU)wps->wParam) 
-        && (GetMenuState((HMENU)wps->wParam,WM_SYSMH0,MF_BYCOMMAND)==(UINT)-1)
         && (!IsAdmin()))
       {
-        AppendMenu((HMENU)wps->wParam,MF_STRING,WM_SYSMH0,sMenuRestart);
-        AppendMenu((HMENU)wps->wParam,MF_STRING,WM_SYSMH1,sMenuStart);
+        if( GetRestartAsAdmin
+        && (GetMenuState((HMENU)wps->wParam,WM_SYSMH0,MF_BYCOMMAND)==(UINT)-1))
+          AppendMenu((HMENU)wps->wParam,MF_STRING,WM_SYSMH0,CResStr(l_hInst,IDS_MENURESTART));
+        if( GetStartAsAdmin
+        && (GetMenuState((HMENU)wps->wParam,WM_SYSMH1,MF_BYCOMMAND)==(UINT)-1))
+          AppendMenu((HMENU)wps->wParam,MF_STRING,WM_SYSMH1,CResStr(l_hInst,IDS_MENUSTART));
       }
       break;
     }
@@ -65,17 +98,17 @@ extern "C" static LRESULT CALLBACK ShellProc(int nCode, WPARAM wParam, LPARAM lP
   return CallNextHookEx(g_hookShell, nCode, wParam, lParam);
 }
 
-extern "C" static LRESULT CALLBACK MenuProc(int nCode, WPARAM wParam, LPARAM lParam)
+LRESULT CALLBACK MenuProc(int nCode, WPARAM wParam, LPARAM lParam)
 {
   #define msg ((MSG*)lParam)
-  if ((nCode>=0)&&(msg->message==WM_SYSCOMMAND)
+  if ((nCode>=0)&&(msg->message==WM_SYSCOMMAND)&&(wParam==PM_REMOVE)
     &&((msg->wParam==WM_SYSMH0)||(msg->wParam==WM_SYSMH1)))
   {
     STARTUPINFO si={0};
     PROCESS_INFORMATION pi;
     si.cb = sizeof(si);
     TCHAR cmd[4096];
-    GetSystemWindowsDirectory(cmd, MAX_PATH);
+    GetSystemWindowsDirectory(cmd, 4096);
     PathAppend(cmd, _T("SuRun.exe"));
     PathQuoteSpaces(cmd);
     _tcscat(cmd,_T(" "));
@@ -94,7 +127,9 @@ extern "C" static LRESULT CALLBACK MenuProc(int nCode, WPARAM wParam, LPARAM lPa
       if (msg->wParam==WM_SYSMH0)
         ::ExitProcess(0);
     }else
-      MessageBox(msg->hwnd,sFileNotFound,0,MB_ICONSTOP);
+      SafeMsgBox(msg->hwnd,CResStr(l_hInst,IDS_FILENOTFOUND),0,MB_ICONSTOP);
+    //We processed the Message: Stop calling other hooks!
+    return 0;
   }
   #undef msg
   return CallNextHookEx(g_hookMenu, nCode, wParam, lParam);
@@ -110,10 +145,10 @@ __declspec(dllexport) BOOL InstallSysMenuHook()
     DBGTrace2("InstallSysMenuHook failed: Still Hooked (%x,%x)",g_hookShell,g_hookMenu);
     return FALSE;
   }
-  g_hookShell=SetWindowsHookEx(WH_CALLWNDPROC,(HOOKPROC)ShellProc,g_hInst,0);
+  g_hookShell=SetWindowsHookEx(WH_CALLWNDPROC,(HOOKPROC)ShellProc,l_hInst,0);
   if (g_hookShell==NULL)
     DBGTrace1("SetWindowsHookEx(Shell) failed: %s",GetLastErrorNameStatic());
-  g_hookMenu =SetWindowsHookEx(WH_GETMESSAGE ,(HOOKPROC)MenuProc ,g_hInst,0);
+  g_hookMenu =SetWindowsHookEx(WH_GETMESSAGE ,(HOOKPROC)MenuProc ,l_hInst,0);
   if (g_hookMenu==NULL)
     DBGTrace1("SetWindowsHookEx(Menu) failed: %s",GetLastErrorNameStatic());
   DBGTrace2("InstallSysMenuHook exit (%x,%x)",g_hookShell,g_hookMenu);
@@ -130,31 +165,4 @@ __declspec(dllexport) BOOL UninstallSysMenuHook()
     bRet&=(UnhookWindowsHookEx(g_hookMenu)!=0);
   g_hookMenu=NULL;
   return bRet;
-}
-
-__declspec(dllexport) BOOL SysMenuHookInstalled()
-{
-  return (g_hookShell!=0)||(g_hookMenu!=0);
-}
-
-BOOL APIENTRY DllMain( HINSTANCE hInstDLL,DWORD dwReason,LPVOID lpReserved)
-{
-  switch(dwReason)
-  {
-  case DLL_PROCESS_ATTACH:
-#ifdef _DEBUG_ENU
-    SetThreadLocale(MAKELCID(MAKELANGID(LANG_ENGLISH,SUBLANG_ENGLISH_US),SORT_DEFAULT));
-#endif _DEBUG_ENU
-    g_hInst=hInstDLL;
-    WM_SYSMH0=RegisterWindowMessage(_T("SYSMH1_2C7B6088-5A77-4d48-BE43-30337DCA9A86"));
-    WM_SYSMH1=RegisterWindowMessage(_T("SYSMH2_2C7B6088-5A77-4d48-BE43-30337DCA9A86"));
-    DisableThreadLibraryCalls(hInstDLL);
-    _tcscpy(sMenuRestart,CResStr(g_hInst,IDS_MENURESTART));
-    _tcscpy(sMenuStart,CResStr(g_hInst,IDS_MENUSTART));
-    _tcscpy(sFileNotFound,CResStr(g_hInst,IDS_FILENOTFOUND));
-    _tcscpy(sSuRun,CResStr(g_hInst,IDS_SURUN));
-    _tcscpy(sErr,CResStr(g_hInst,IDS_ERR));
-    _tcscpy(sTip,CResStr(g_hInst,IDS_TOOLTIP));
-  }
-  return TRUE;
 }

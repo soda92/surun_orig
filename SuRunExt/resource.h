@@ -6,8 +6,13 @@
 #define IDS_ERR                         2
 #define IDS_TOOLTIP                     3
 #define IDS_SURUN                       4
+#define IDS_SURUNCMD                    5
+#define IDS_SURUNEXP                    6
+#define IDS_STRING7                     7
+#define IDS_CPLNAME                     8
 #define IDS_MENURESTART                 13
 #define IDS_MENUSTART                   18
+#define IDI_MAINICON                    100
 
 // Next default values for new objects
 // 

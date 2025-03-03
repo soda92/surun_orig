@@ -3,13 +3,12 @@
 // This source code is part of SuRun
 //
 // Some sources in this project evolved from Microsoft sample code, some from 
-// other free sources. The Application icons are from Foood's "iCandy" icon 
-// set (http://www.iconaholic.com). the Shield Icons are taken from Windows XP 
-// Service Pack 2 (xpsp2res.dll) 
+// other free sources. The Shield Icons are taken from Windows XP Service Pack 
+// 2 (xpsp2res.dll) 
 // 
 // Feel free to use the SuRun sources for your liking.
 // 
-//                                   (c) Kay Bruns (http://kay-bruns.de), 2007
+//                                (c) Kay Bruns (http://kay-bruns.de), 2007,08
 //////////////////////////////////////////////////////////////////////////////
 #define _WIN32_WINNT 0x0500
 #define WINVER       0x0500
@@ -20,6 +19,8 @@
 #include <Shobjidl.h>
 #include <ShlGuid.h>
 #include <lm.h>
+#include <MMSYSTEM.H>
+
 #include "Helpers.h"
 #include "DBGTRace.h"
 
@@ -28,6 +29,8 @@
 #pragma comment(lib,"Mpr.lib")
 #pragma comment(lib,"Shell32.lib")
 #pragma comment(lib,"ole32.lib")
+#pragma comment(lib,"Version.lib")
+#pragma comment(lib,"WINMM.LIB")
 
 //////////////////////////////////////////////////////////////////////////////
 //
@@ -35,14 +38,13 @@
 //
 //////////////////////////////////////////////////////////////////////////////
 
-BOOL GetRegAny(HKEY HK,LPCTSTR SubKey,LPCTSTR ValName,DWORD Type,BYTE* RetVal,DWORD nBytes)
+BOOL GetRegAny(HKEY HK,LPCTSTR SubKey,LPCTSTR ValName,DWORD Type,BYTE* RetVal,DWORD* nBytes)
 {
   HKEY Key;
   if (RegOpenKeyEx(HK,SubKey,0,KEY_READ,&Key)==ERROR_SUCCESS)
   {
     DWORD dwType=Type;
-    DWORD l=nBytes;
-    BOOL bRet=(RegQueryValueEx(Key,ValName,NULL,&dwType,RetVal,&l)==ERROR_SUCCESS)
+    BOOL bRet=(RegQueryValueEx(Key,ValName,NULL,&dwType,RetVal,nBytes)==ERROR_SUCCESS)
             &&(dwType==Type);
       RegCloseKey(Key);
     return bRet;
@@ -81,7 +83,8 @@ BOOL RegDelVal(HKEY HK,LPCTSTR SubKey,LPCTSTR ValName)
 DWORD GetRegInt(HKEY HK,LPCTSTR SubKey,LPCTSTR ValName,DWORD Default)
 {
   DWORD RetVal=0;
-  if (GetRegAny(HK,SubKey,ValName,REG_DWORD,(BYTE*)&RetVal,sizeof(RetVal)))
+  DWORD n=sizeof(RetVal);
+  if (GetRegAny(HK,SubKey,ValName,REG_DWORD,(BYTE*)&RetVal,&n))
     return RetVal;
   return Default;
 }
@@ -91,16 +94,30 @@ BOOL SetRegInt(HKEY HK,LPCTSTR SubKey,LPCTSTR ValName,DWORD Value)
   return SetRegAny(HK,SubKey,ValName,REG_DWORD,(BYTE*)&Value,sizeof(DWORD));
 }
 
+__int64 GetRegInt64(HKEY HK,LPCTSTR SubKey,LPCTSTR ValName,__int64 Default)
+{
+  __int64 RetVal=0;
+  DWORD n=sizeof(RetVal);
+  if (GetRegAny(HK,SubKey,ValName,REG_BINARY,(BYTE*)&RetVal,&n))
+    return RetVal;
+  return Default;
+}
+
+BOOL SetRegInt64(HKEY HK,LPCTSTR SubKey,LPCTSTR ValName,__int64 Value)
+{
+  return SetRegAny(HK,SubKey,ValName,REG_BINARY,(BYTE*)&Value,sizeof(__int64));
+}
+
 BOOL GetRegStr(HKEY HK,LPCTSTR SubKey,LPCTSTR Val,LPTSTR Str,DWORD ccMax)
 {
-  if (GetRegAny(HK,SubKey,Val,REG_SZ,(BYTE*)Str,ccMax))
+  if (GetRegAny(HK,SubKey,Val,REG_SZ,(BYTE*)Str,&ccMax))
     return true;
-  return GetRegAny(HK,SubKey,Val,REG_EXPAND_SZ,(BYTE*)Str,ccMax);
+  return GetRegAny(HK,SubKey,Val,REG_EXPAND_SZ,(BYTE*)Str,&ccMax);
 }
 
 BOOL SetRegStr(HKEY HK,LPCTSTR SubKey,LPCTSTR ValName,LPCTSTR Value)
 {
-  return SetRegAny(HK,SubKey,ValName,REG_SZ,(BYTE*)Value,_tcslen(Value)*sizeof(TCHAR));
+  return SetRegAny(HK,SubKey,ValName,REG_SZ,(BYTE*)Value,(DWORD)_tcslen(Value)*sizeof(TCHAR));
 }
 
 BOOL RegEnum(HKEY HK,LPCTSTR SubKey,int Index,LPTSTR Str,DWORD ccMax)
@@ -132,12 +149,12 @@ BOOL DelRegKey(HKEY hKey,LPTSTR pszSubKey)
   HKEY hEnumKey;
   if(RegOpenKeyEx(hKey,pszSubKey,0,KEY_ENUMERATE_SUB_KEYS,&hEnumKey)!=NOERROR)
     return FALSE;
-  TCHAR szKey[MAX_PATH];
-  DWORD dwSize = MAX_PATH;
+  TCHAR szKey[4096];
+  DWORD dwSize = 4096;
   while (ERROR_SUCCESS==RegEnumKeyEx(hEnumKey,0,szKey,&dwSize,0,0,0,0))
   {
     DelRegKey(hEnumKey, szKey);
-    dwSize=MAX_PATH;
+    dwSize=4096;
   }
   RegCloseKey(hEnumKey);
   RegDeleteKey(hKey, pszSubKey);
@@ -226,13 +243,83 @@ Cleanup:
     FreeSid(pEveryoneSID);
 }
 
+void SetRegistryTreeAccess(LPTSTR KeyName,LPTSTR Account,bool bAllow)
+{
+  DWORD dwRes;
+  PACL pOldDACL = NULL, pNewDACL = NULL;
+  PSECURITY_DESCRIPTOR pSD = NULL;
+  EXPLICIT_ACCESS ea={0};
+  if (NULL == KeyName) 
+    return;
+  // Get a pointer to the existing DACL.
+  dwRes = GetNamedSecurityInfo(KeyName, SE_REGISTRY_KEY, DACL_SECURITY_INFORMATION,  
+    NULL, NULL, &pOldDACL, NULL, &pSD);
+  if (ERROR_SUCCESS != dwRes) 
+  { 
+    DBGTrace1( "GetNamedSecurityInfo failed %s\n", GetErrorNameStatic(dwRes));
+    goto Cleanup; 
+  }  
+  // Initialize an EXPLICIT_ACCESS structure for an ACE.
+  BuildExplicitAccessWithName(&ea,Account,KEY_ALL_ACCESS,
+    bAllow?SET_ACCESS:REVOKE_ACCESS,SUB_CONTAINERS_AND_OBJECTS_INHERIT);
+  // Create a new ACL that merges the new ACE into the existing DACL.
+  dwRes = SetEntriesInAcl(1, &ea, pOldDACL, &pNewDACL);
+  if (ERROR_SUCCESS != dwRes)  
+  {
+    DBGTrace1( "SetEntriesInAcl failed %s\n", GetErrorNameStatic(dwRes));
+    goto Cleanup; 
+  }  
+  // Attach the new ACL as the object's DACL.
+  dwRes = SetNamedSecurityInfo(KeyName, SE_REGISTRY_KEY, DACL_SECURITY_INFORMATION,  
+    NULL, NULL, pNewDACL, NULL);
+  if (ERROR_SUCCESS != dwRes)  
+  {
+    DBGTrace1( "SetNamedSecurityInfo failed %s\n", GetErrorNameStatic(dwRes));
+    goto Cleanup; 
+  }  
+Cleanup:
+  if(pSD != NULL) 
+    LocalFree((HLOCAL) pSD); 
+  if(pNewDACL != NULL) 
+    LocalFree((HLOCAL) pNewDACL); 
+}
+
+BOOL HasRegistryKeyAccess(LPTSTR KeyName,LPTSTR Account)
+{
+  DWORD dwRes;
+  PACL pDACL = NULL;
+  PSECURITY_DESCRIPTOR pSD = NULL;
+  TRUSTEE tr={0};
+  ACCESS_MASK am=0;
+  if (NULL == KeyName) 
+    return 0;
+  // Get a pointer to the existing DACL.
+  dwRes = GetNamedSecurityInfo(KeyName, SE_REGISTRY_KEY, DACL_SECURITY_INFORMATION,  
+    NULL, NULL, &pDACL, NULL, &pSD);
+  if (ERROR_SUCCESS != dwRes) 
+  { 
+    DBGTrace1( "GetNamedSecurityInfo failed %s\n", GetErrorNameStatic(dwRes));
+    goto Cleanup; 
+  }  
+  // Initialize an EXPLICIT_ACCESS structure for an ACE.
+  BuildTrusteeWithName(&tr,Account);
+  if (GetEffectiveRightsFromAcl(pDACL,&tr,&am)!=ERROR_SUCCESS)
+    DBGTrace1( "GetEffectiveRightsFromAcl failed %s\n", GetErrorNameStatic(dwRes));
+Cleanup:
+  if(pSD != NULL) 
+    LocalFree((HLOCAL) pSD); 
+  if(pDACL != NULL) 
+    LocalFree((HLOCAL) pDACL); 
+  return (am&KEY_WRITE)==KEY_WRITE;
+}
+
 //////////////////////////////////////////////////////////////////////////////
 //
 // SetAdminDenyUserAccess
 //
 //////////////////////////////////////////////////////////////////////////////
 
-void SetAdminDenyUserAccess(HANDLE hObject)
+void SetAdminDenyUserAccess(HANDLE hObject,DWORD ProcessID/*=0*/,DWORD Permissions/*=SYNCHRONIZE*/)
 {
   DWORD dwRes;
   PACL pOldDACL=NULL, pNewDACL=NULL;
@@ -240,7 +327,9 @@ void SetAdminDenyUserAccess(HANDLE hObject)
   EXPLICIT_ACCESS ea[2]={0};
   SID_IDENTIFIER_AUTHORITY AdminSidAuthority = SECURITY_NT_AUTHORITY;
   PSID AdminSID = NULL;
-  PSID UserSID  = GetProcessUserSID(GetCurrentProcessId());
+  if (ProcessID==0)
+    ProcessID=GetCurrentProcessId();
+  PSID UserSID  = GetProcessUserSID(ProcessID);
   if (NULL == hObject) 
     goto Cleanup; 
   // Get a pointer to the existing DACL.
@@ -258,7 +347,8 @@ void SetAdminDenyUserAccess(HANDLE hObject)
   ea[0].grfAccessMode = GRANT_ACCESS;
   ea[0].Trustee.ptstrName  = (LPTSTR)AdminSID;
   // The ACE will deny the current User access to the object.
-  ea[1].grfAccessMode = REVOKE_ACCESS;
+  ea[1].grfAccessPermissions = Permissions;
+  ea[1].grfAccessMode = SET_ACCESS;
   ea[1].Trustee.ptstrName  = (LPTSTR)UserSID;
   // Create a new ACL that merges the new ACE
   // into the existing DACL.
@@ -277,6 +367,56 @@ Cleanup:
   if (AdminSID)
     FreeSid(AdminSID);
   free(UserSID);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// 
+// GetUserAccessSD:
+//   create a self relative "full access" Security Descriptor for the current user
+// 
+//////////////////////////////////////////////////////////////////////////////
+
+PSECURITY_DESCRIPTOR GetUserAccessSD()
+{
+  PSID pUserSID = GetProcessUserSID(GetCurrentProcessId());
+  PACL pACL = NULL;
+  PSECURITY_DESCRIPTOR pSD = 0;
+  PSECURITY_DESCRIPTOR pSDret =0;
+  EXPLICIT_ACCESS ea={0};
+  DWORD SDlen=0;
+  ea.grfAccessPermissions = STANDARD_RIGHTS_ALL|SPECIFIC_RIGHTS_ALL|GENERIC_READ|GENERIC_WRITE;
+  ea.grfAccessMode = SET_ACCESS;
+  ea.grfInheritance= NO_INHERITANCE;
+  ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+  ea.Trustee.TrusteeType = TRUSTEE_IS_GROUP;
+  ea.Trustee.ptstrName  = (LPTSTR) pUserSID;
+  if (ERROR_SUCCESS != SetEntriesInAcl(1,&ea,NULL,&pACL)) 
+    goto Cleanup;
+  pSD = (PSECURITY_DESCRIPTOR)LocalAlloc(LPTR,SECURITY_DESCRIPTOR_MIN_LENGTH); 
+  if (pSD == NULL) 
+    goto Cleanup; 
+  if (!InitializeSecurityDescriptor(pSD,SECURITY_DESCRIPTOR_REVISION)) 
+    goto Cleanup; 
+  if (!SetSecurityDescriptorDacl(pSD,TRUE,pACL,FALSE))
+    goto Cleanup; 
+  MakeSelfRelativeSD(pSD,pSDret,&SDlen);
+  pSDret=(PSECURITY_DESCRIPTOR)LocalAlloc(LPTR,SDlen);
+  if(!MakeSelfRelativeSD(pSD,pSDret,&SDlen))
+    goto Cleanup;
+  LocalFree(pUserSID);
+  LocalFree(pACL);
+  LocalFree(pSD);
+  return pSDret;
+Cleanup:
+  if (pUserSID) 
+    LocalFree(pUserSID);
+  if (pACL) 
+    LocalFree(pACL);
+  if (pSD) 
+    LocalFree(pSD);
+  if (pSDret) 
+    LocalFree(pSDret);
+  return 0;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -309,6 +449,276 @@ BOOL NetworkPathToUNCPath(LPTSTR path)
     return FALSE;
   _tcscpy(path,puni->lpUniversalName);
   return TRUE;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+//
+// QualifyPath
+//
+//////////////////////////////////////////////////////////////////////////////
+
+//Combine path parts
+void Combine(LPTSTR Dst,LPTSTR path,LPTSTR file,LPTSTR ext)
+{
+  _tcscpy(Dst,path);
+  PathAppend(Dst,file);
+  PathAddExtension(Dst,ext);
+}
+
+//Split path parts
+void Split(LPTSTR app,LPTSTR path,LPTSTR file,LPTSTR ext)
+{
+  //Get Path
+  _tcscpy(path,app);
+  PathRemoveFileSpec(path);
+  //Get File, Ext
+  _tcscpy(file,app);
+  PathStripPath(file);
+  _tcscpy(ext,PathFindExtension(file));
+  PathRemoveExtension(file);
+}
+
+BOOL QualifyPath(LPTSTR app,LPTSTR path,LPTSTR file,LPTSTR ext,LPCTSTR CurDir)
+{
+  static LPTSTR ExeExts[]={L".exe",L".lnk",L".cmd",L".bat",L".com",L".pif"};
+  if (path[0]=='.')
+  {
+    //relative path: make it absolute
+    _tcscpy(app,CurDir);
+    PathAppend(app,path);
+    PathCanonicalize(path,app);
+    Combine(app,path,file,ext);
+  }
+  if ((path[0]=='\\'))
+  {
+    if(path[1]=='\\')
+      //UNC path: must be fully qualified!
+      return PathFileExists(app)
+        && (!PathIsDirectory(app));
+    //Root of current drive
+    _tcscpy(path,CurDir);
+    PathStripToRoot(path);
+    Combine(app,path,file,ext);
+  }
+  if (path[0]==0)
+  {
+    _tcscpy(path,app);
+    LPCTSTR d[2]={CurDir,0};
+    // file.ext ->search in current dir and %path%
+    if ((PathFindOnPath(path,d))&&(!PathIsDirectory(path)))
+    {
+      //Done!
+      _tcscpy(app,path);
+      PathRemoveFileSpec(path);
+      return TRUE;
+    }
+    if (ext[0]==0) for (int i=0;i<countof(ExeExts);i++)
+    //Not found! Try all Extensions for Executables
+    // file ->search (exe,bat,cmd,com,pif,lnk) in current dir, search %path%
+    {
+      _stprintf(path,L"%s%s",file,ExeExts[i]);
+      if ((PathFindOnPath(path,d))&&(!PathIsDirectory(path)))
+      {
+        //Done!
+        _tcscpy(app,path);
+        _tcscpy(ext,ExeExts[i]);
+        PathRemoveFileSpec(path);
+        return TRUE;
+      }
+    }
+    return FALSE;
+  }
+  if (path[1]==':')
+  {
+    static TCHAR d[4096];
+    zero(d);
+    GetCurrentDirectory(countof(d),d);
+    //if path=="d:" -> "cd d:"
+    if (!SetCurrentDirectory(path))
+      return false;
+    //if path=="d:" -> "cd d:" -> "d:\documents"
+    GetCurrentDirectory(4096,path);
+    SetCurrentDirectory(d);
+    Combine(app,path,file,ext);
+  }
+  // d:\path\file.ext ->PathFileExists
+  if (PathFileExists(app) && (!PathIsDirectory(app)))
+    return TRUE;
+  if (ext[0]==0) for (int i=0;i<countof(ExeExts);i++)
+  //Not found! Try all Extensions for Executables
+  // file ->search (exe,bat,cmd,com,pif,lnk) in path
+  {
+    Combine(app,path,file,ExeExts[i]);
+    if ((PathFileExists(app))&&(!PathIsDirectory(app)))
+    {
+      //Done!
+      _tcscpy(ext,ExeExts[i]);
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+//
+// ResolveCommandLine: Based on SuDown (http://SuDown.sourceforge.net)
+//
+//////////////////////////////////////////////////////////////////////////////
+BOOL ResolveCommandLine(IN LPWSTR CmdLine,IN LPCWSTR CurDir,OUT LPTSTR cmd)
+{
+  //Application
+  static TCHAR app[4096];
+  zero(app);
+  static TCHAR args[4096]={0};
+  zero(args);
+  _tcscpy(args,CmdLine);
+  PathRemoveBlanks(args);
+  //Clean up double spaces or unneeded quotes
+  LPTSTR p=&args[0];
+  while (p && *p)
+  {
+    LPTSTR p1=PathGetArgs(p);
+    if(p1 && *p1)
+      *(p1-1)=0;
+    PathRemoveBlanks(p);
+    PathUnquoteSpaces(p);
+    PathQuoteSpaces(p);
+    _tcscat(app,p);
+    if (p1 && *p1)
+        _tcscat(app,_T(" "));
+    p=p1;
+  }
+  //Save parameters
+  _tcscpy(args,PathGetArgs(app));
+  PathRemoveArgs(app);
+  PathUnquoteSpaces(app);
+  NetworkPathToUNCPath(app);
+  BOOL fExist=PathFileExists(app);
+  //Split path parts
+  static TCHAR path[4096];
+  static TCHAR file[4096+1];
+  static TCHAR ext[4096+1];
+  static TCHAR SysDir[4096+1];
+  zero(path);
+  zero(file);
+  zero(ext);
+  zero(SysDir);
+  GetSystemDirectory(SysDir,4096);
+  Split(app,path,file,ext);
+  //Explorer(.exe)
+  if ((!fExist)&&(!_wcsicmp(app,L"explorer"))||(!_wcsicmp(app,L"explorer.exe")))
+  {
+    if (args[0]==0) 
+      wcscpy(args,L"/e,C:");
+    GetSystemWindowsDirectory(app,4096);
+    PathAppend(app, L"explorer.exe");
+  }else 
+  //Msconfig(.exe) is not in path but found by windows
+  if ((!fExist)&&(!_wcsicmp(app,L"msconfig"))||(!_wcsicmp(app,L"msconfig.exe")))
+  {
+    GetSystemWindowsDirectory(app,4096);
+    PathAppend(app, L"pchealth\\helpctr\\binaries\\msconfig.exe");
+    if (!PathFileExists(app))
+      wcscpy(app,L"msconfig");
+    zero(args);
+  }else
+  //Control Panel special folder files:
+  if (((!fExist)
+    &&((!_wcsicmp(app,L"control.exe"))||(!_wcsicmp(app,L"control"))) 
+    && (args[0]==0))
+    ||(fExist && (!_wcsicmp(path,SysDir)) && (!_wcsicmp(file,L"control")) && (!_wcsicmp(ext,L".exe"))))
+  {
+    GetSystemWindowsDirectory(app,4096);
+    PathAppend(app,L"explorer.exe");
+    if (LOBYTE(LOWORD(GetVersion()))<6)
+      //2k/XP: Control Panel is beneath "my computer"!
+      wcscpy(args,L"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\::{21EC2020-3AEA-1069-A2DD-08002B30309D}");
+    else
+      //Vista: Control Panel is beneath desktop!
+      wcscpy(args,L"::{21EC2020-3AEA-1069-A2DD-08002B30309D}");
+  }else if (((!_wcsicmp(app,L"ncpa.cpl")) && (args[0]==0))
+    ||(fExist && (!_wcsicmp(path,SysDir)) && (!_wcsicmp(file,L"ncpa")) && (!_wcsicmp(ext,L".cpl"))))
+  {
+    GetSystemWindowsDirectory(app,4096);
+    PathAppend(app,L"explorer.exe");
+    if (LOBYTE(LOWORD(GetVersion()))<6)
+      //2k/XP: Control Panel is beneath "my computer"!
+      wcscpy(args,L"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\::{21EC2020-3AEA-1069-A2DD-08002B30309D}\\::{7007ACC7-3202-11D1-AAD2-00805FC1270E}");
+    else
+      //Vista: Control Panel is beneath desktop!
+      wcscpy(args,L"::{21EC2020-3AEA-1069-A2DD-08002B30309D}\\::{7007ACC7-3202-11D1-AAD2-00805FC1270E}");
+  }else 
+  //*.reg files
+  if (!_wcsicmp(ext, L".reg")) 
+  {
+    PathQuoteSpaces(app);
+    wcscpy(args,app);
+    GetSystemWindowsDirectory(app,4096);
+    PathAppend(app, L"regedit.exe");
+  }else
+  //Control Panel files  
+  if (!_wcsicmp(ext, L".cpl")) 
+  {
+    PathQuoteSpaces(app);
+    if (args[0] && app[0])
+      wcscat(app,L",");
+    wcscat(app,args);
+    wcscpy(args,L"shell32.dll,Control_RunDLLAsUser ");
+    wcscat(args,app);
+    GetSystemDirectory(app,4096);
+    PathAppend(app,L"rundll32.exe");
+  }else 
+  //Windows Installer files  
+  if (!_wcsicmp(ext, L".msi")) 
+  {
+    PathQuoteSpaces(app);
+    if (args[0] && app[0])
+    {
+      wcscat(app,L" ");
+      wcscat(app,args);
+      wcscpy(args,app);
+    }else
+    {
+      wcscpy(args,L"/i ");
+      wcscat(args,app);
+    }
+    GetSystemDirectory(app,4096);
+    PathAppend(app,L"msiexec.exe");
+  }else 
+  //Windows Management Console Sanp-In
+  if (!_wcsicmp(ext, L".msc")) 
+  {
+    if (path[0]==0)
+    {
+      GetSystemDirectory(path,4096);
+      PathAppend(path,app);
+      wcscpy(app,path);
+      zero(path);
+    }
+    PathQuoteSpaces(app);
+    if (args[0] && app[0])
+      wcscat(app,L" ");
+    wcscat(app,args);
+    wcscpy(args,app);
+    GetSystemDirectory(app,4096);
+    PathAppend(app,L"mmc.exe");
+  }else
+  //Try to fully qualify the executable:
+  if (!QualifyPath(app,path,file,ext,CurDir))
+  {
+    _tcscpy(app,CmdLine);
+    PathRemoveArgs(app);
+    PathUnquoteSpaces(app);
+    NetworkPathToUNCPath(app);
+    Split(app,path,file,ext);
+  }
+  wcscpy(cmd,app);
+  fExist=PathFileExists(app);
+  PathQuoteSpaces(cmd);
+  if (args[0] && app[0])
+    wcscat(cmd,L" ");
+  wcscat(cmd,args);
+  return fExist;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -373,7 +783,7 @@ bool DeleteDirectory(LPCTSTR DIR)
 {
   bool bRet=true;
   WIN32_FIND_DATA fd={0};
-  TCHAR s[MAX_PATH];
+  TCHAR s[4096];
   _tcscpy(s,DIR);
   PathAppend(s,_T("*.*"));
   HANDLE hFind=FindFirstFile(s,&fd);
@@ -412,8 +822,8 @@ bool DeleteDirectory(LPCTSTR DIR)
 bool GetSIDUserName(PSID sid,LPTSTR User,LPTSTR Domain/*=0*/)
 {
   SID_NAME_USE snu;
-  TCHAR uName[UNLEN],dName[DNLEN];
-  DWORD uLen=UNLEN, dLen=DNLEN;
+  TCHAR uName[UNLEN+1],dName[UNLEN+1];
+  DWORD uLen=UNLEN, dLen=UNLEN;
   if(!LookupAccountSid(NULL,sid,uName,&uLen,dName,&dLen,&snu))
     return FALSE;
   if(Domain==0)
@@ -440,7 +850,7 @@ bool GetTokenUserName(HANDLE hUser,LPTSTR User,LPTSTR Domain/*=0*/)
   if(!ptu)
     return false;
   if(GetTokenInformation(hUser,TokenUser,(PVOID)ptu,dwLen,&dwLen))
-    GetSIDUserName(ptu->User.Sid,User,Domain);
+     GetSIDUserName(ptu->User.Sid,User,Domain);
   free(ptu);
   return true;
 }
@@ -459,7 +869,7 @@ PSID GetProcessUserSID(DWORD ProcessID)
     return 0;
   HANDLE hToken;
   PSID sid=0;
-  // Open impersonation token for Shell process
+  // Open impersonation token for process
   if (OpenProcessToken(hProc,TOKEN_QUERY,&hToken))
   {
     DWORD dwLen=0;
@@ -498,7 +908,7 @@ bool GetProcessUserName(DWORD ProcessID,LPTSTR User,LPTSTR Domain/*=0*/)
     return 0;
   HANDLE hToken;
   bool bRet=false;
-  // Open impersonation token for Shell process
+  // Open impersonation token for process
   if (OpenProcessToken(hProc,TOKEN_QUERY,&hToken))
   {
     bRet=GetTokenUserName(hToken,User,Domain);
@@ -506,4 +916,121 @@ bool GetProcessUserName(DWORD ProcessID,LPTSTR User,LPTSTR Domain/*=0*/)
   }
   CloseHandle(hProc);
   return bRet;
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// 
+// GetShellProcessToken
+// 
+/////////////////////////////////////////////////////////////////////////////
+
+HANDLE GetShellProcessToken()
+{
+  DWORD ShellID=0;
+  GetWindowThreadProcessId(GetShellWindow(),&ShellID);
+  if (!ShellID)
+    return 0;
+  HANDLE hShell=OpenProcess(PROCESS_QUERY_INFORMATION,0,ShellID);
+  if (!hShell)
+    return 0;
+  HANDLE hTok=0;
+  OpenProcessToken(hShell,TOKEN_DUPLICATE,&hTok);
+  CloseHandle(hShell);
+  return hTok;
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// 
+// GetVersionString
+// 
+/////////////////////////////////////////////////////////////////////////////
+
+static TCHAR verstr[20]={0};
+LPCTSTR GetVersionString()
+{
+  if (verstr[0]!=0)
+    return verstr;
+  TCHAR FName[4096];
+  GetModuleFileName(0,FName,4096);
+  int cbVerInfo=GetFileVersionInfoSize(FName,0);
+  if (cbVerInfo)
+  {
+    void* VerInfo=malloc(cbVerInfo);
+    GetFileVersionInfo(FName,0,cbVerInfo,VerInfo);
+    VS_FIXEDFILEINFO* Ver;
+    UINT cbVer=sizeof(Ver);
+    VerQueryValue(VerInfo,_T("\\"),(void**)&Ver,&cbVer);
+    if (cbVer)
+    {
+      _stprintf(verstr,_T("%d.%d.%d.%d"),
+        Ver->dwProductVersionMS>>16 & 0x0000FFFF,
+        Ver->dwProductVersionMS     & 0x0000FFFF,
+        Ver->dwProductVersionLS>>16 & 0x0000FFFF,
+        Ver->dwProductVersionLS     & 0x0000FFFF);
+      free(VerInfo);
+      return verstr;
+    }
+    free(VerInfo);
+  }
+  return _T("");
+}
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// LoadUserBitmap
+//
+/////////////////////////////////////////////////////////////////////////////
+
+HBITMAP LoadUserBitmap(LPCTSTR UserName)
+{
+  TCHAR PicDir[4096];
+  GetRegStr(HKEY_LOCAL_MACHINE,
+    _T("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Shell Folders"),
+    _T("Common AppData"),PicDir,4096);
+  PathUnquoteSpaces(PicDir);
+  PathAppend(PicDir,_T("Microsoft\\User Account Pictures"));
+  TCHAR Pic[UNLEN+1];
+  _tcscpy(Pic,UserName);
+  PathStripPath(Pic);
+  PathAppend(PicDir,Pic);
+  PathAddExtension(PicDir,_T(".bmp"));
+  //DBGTrace1("LoadUserBitmap: %s",Pic);
+  return (HBITMAP)LoadImage(0,PicDir,IMAGE_BITMAP,0,0,LR_LOADFROMFILE);
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// 
+// CTimeOut
+// 
+/////////////////////////////////////////////////////////////////////////////
+
+CTimeOut::CTimeOut()
+{
+  Set(0);
+}
+
+CTimeOut::CTimeOut(DWORD TimeOut)
+{
+  Set(TimeOut);
+}
+
+void CTimeOut::Set(DWORD TimeOut)
+{
+  m_EndTime=timeGetTime()+TimeOut;
+}
+
+DWORD CTimeOut::Rest()
+{
+  int to=(int)m_EndTime-(int)timeGetTime();
+  if (to<=0)
+  {
+    SetLastError(ERROR_TIMEOUT);
+    return 0;
+  }
+  return (DWORD)to;
+}
+
+bool CTimeOut::TimedOut()
+{
+  return Rest()==0;
 }
