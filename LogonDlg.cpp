@@ -26,6 +26,7 @@
 #include "sspi_auth.h"
 #include "Helpers.h"
 #include "Setup.h"
+#include "WinStaDesk.h"
 #include "Resource.h"
 
 #pragma comment(lib,"shlwapi.lib")
@@ -326,6 +327,11 @@ INT_PTR CALLBACK DialogProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
   {
   case WM_INITDIALOG:
     {
+      if (g_WatchDogEvent)
+      {
+        SetEvent(g_WatchDogEvent);
+        SetTimer(hwnd,1265142,500,0);
+      }
       LOGONDLGPARAMS* p=(LOGONDLGPARAMS*)lParam;
       SetWindowLongPtr(hwnd,GWLP_USERDATA,lParam);
       if (IsWindowEnabled(GetDlgItem(hwnd,IDC_PASSWORD)))
@@ -439,7 +445,7 @@ INT_PTR CALLBACK DialogProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
     {
       if (wParam==1)
         SetUserBitmap(hwnd);
-      if (wParam==2)
+      else if (wParam==2)
       {
         LOGONDLGPARAMS* p=(LOGONDLGPARAMS*)GetWindowLongPtr(hwnd,GWLP_USERDATA);
         p->TimeOut--;
@@ -447,7 +453,8 @@ INT_PTR CALLBACK DialogProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
           EndDialog(hwnd,0);
         else if (p->TimeOut<10)
           SetDlgItemText(hwnd,IDCANCEL,CResStr(IDS_CANCEL,p->TimeOut));
-      }
+      }else if ((wParam==1265142)&& g_WatchDogEvent)
+        SetEvent(g_WatchDogEvent);
       return TRUE;
     }
   case WM_COMMAND:
@@ -573,8 +580,8 @@ BOOL LogonAdmin(int IDmsg,...)
   TCHAR P[PWLEN]={0};
   LOGONDLGPARAMS p(S,U,P,false,true,false);
   p.Users.SetGroupUsers(DOMAIN_ALIAS_RID_ADMINS,FALSE);
-  BOOL bRet=(BOOL)DialogBoxParam(GetModuleHandle(0),
-                    MAKEINTRESOURCE(IDD_LOGONDLG),0,DialogProc,(LPARAM)&p);
+  BOOL bRet=(BOOL)DialogBoxParam(GetModuleHandle(0),MAKEINTRESOURCE(IDD_LOGONDLG),
+                    0,DialogProc,(LPARAM)&p);
   zero(U);
   zero(P);
   return bRet;

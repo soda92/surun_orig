@@ -19,6 +19,9 @@
 #include "resstr.h"
 #include "SuRunExt/SuRunExt.h"
 
+#define WATCHDOG_EVENT_NAME   _T("SURUN_WATCHDOG_EVENT")
+#define STAYONDESK_EVENT_NAME _T("SURUN_STAYONDESK_EVENT")
+
 //////////////////////////////////////////////////////////////////////////////
 // 
 //  HKLM\Security\SuRun keys
@@ -153,8 +156,8 @@
 //Hook stuff
 #define GetUseIShExHook       (GetShExtSetting(UseIShExHook,1)!=0)
 #define SetUseIShExHook(b)     SetShExtSetting(UseIShExHook,b,1)
-#define GetUseIATHook         (GetShExtSetting(UseIATHook,1)!=0)
-#define SetUseIATHook(b)       SetShExtSetting(UseIATHook,b,1)
+#define GetUseIATHook         (GetShExtSetting(UseIATHook,0)!=0)
+#define SetUseIATHook(b)       SetShExtSetting(UseIATHook,b,0)
 
 //TrayMsg stuff
 #define GetShowAutoRuns       (GetShExtSetting(ShowAutoRuns,1)!=0)
