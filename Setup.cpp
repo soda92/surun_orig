@@ -12,7 +12,7 @@
 //////////////////////////////////////////////////////////////////////////////
 
 #ifdef _DEBUG
-//#define _DEBUGSETUP
+#define _DEBUGSETUP
 #endif _DEBUG
 
 #define _WIN32_WINNT 0x0500
@@ -33,7 +33,7 @@
 #include "DBGTrace.h"
 #include "WinStaDesk.h"
 #include "Resource.h"
-#include "Service.h"
+#include "Anchor.h"
 
 #pragma comment(lib,"comctl32.lib")
 #pragma comment(lib,"Comdlg32.lib")
@@ -45,33 +45,10 @@
 // 
 //////////////////////////////////////////////////////////////////////////////
 
-static BYTE KEYPASS[16]={0x5B,0xC3,0x25,0xE9,0x8F,0x2A,0x41,0x10,0xA3,0xF4,0x26,0xD1,0x62,0xB4,0x0A,0xE2};
-
-void LoadPassword(LPTSTR UserName,LPTSTR Password,DWORD nBytes)
-{
-  if (!GetSavePW)
-    return;
-  CBlowFish bf;
-  bf.Initialize(KEYPASS,sizeof(KEYPASS));
-  if (GetRegAny(HKLM,PASSWKEY,UserName,REG_BINARY,(BYTE*)Password,&nBytes))
-    bf.Decode((BYTE*)Password,(BYTE*)Password,nBytes);
-}
-
 void DeletePassword(LPTSTR UserName)
 {
-  RegDelVal(HKLM,PASSWKEY,UserName);
+  RegDelVal(HKLM,PASSWKEY,UserName);//for Historical reasons!
   RegDelVal(HKLM,TIMESKEY,UserName);
-}
-
-void SavePassword(LPTSTR UserName,LPTSTR Password)
-{
-  if (!GetSavePW)
-    return;
-  CBlowFish bf;
-  TCHAR pw[PWLEN];
-  bf.Initialize(KEYPASS,sizeof(KEYPASS));
-  SetRegAny(HKLM,PASSWKEY,UserName,REG_BINARY,(BYTE*)pw,
-    bf.Encode((BYTE*)Password,(BYTE*)pw,(int)_tcslen(Password)*sizeof(TCHAR)));
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -90,7 +67,6 @@ BOOL PasswordExpired(LPTSTR UserName)
   __int64 pwto=ft2min*GetPwTimeOut;
   if ((pwto==0) || ((ft-GetRegInt64(HKLM,TIMESKEY,UserName,0))<pwto))
     return FALSE;
-  DBGTrace1("Password for %s Expired!",UserName);
   DeletePassword(UserName);
   return TRUE;
 }
@@ -108,24 +84,50 @@ void UpdLastRunTime(LPTSTR UserName)
 // 
 //////////////////////////////////////////////////////////////////////////////
 
-BOOL IsInWhiteList(LPTSTR User,LPTSTR CmdLine,DWORD Flag)
+//Common for GetWhiteListFlags and GetBlackListFlags
+DWORD GetRegListFlags(HKEY HKR,LPCTSTR SubKey,LPCTSTR CmdLine,DWORD Default)
 {
-  return (GetRegInt(HKLM,WHTLSTKEY(User),CmdLine,0)&Flag)==Flag;
+  HKEY Key;
+  if(RegOpenKeyEx(HKR,SubKey,0,KSAM(KEY_READ),&Key)!=ERROR_SUCCESS)
+    return Default;
+  DWORD sizd=sizeof(DWORD);
+  DWORD d=Default;
+  DWORD t=REG_DWORD;
+  if ((RegQueryValueEx(Key,CmdLine,0,&t,(BYTE*)&d,&sizd)==ERROR_SUCCESS)
+    &&(t==REG_DWORD))
+    return RegCloseKey(Key),d;
+  TCHAR cmd[4096];
+  DWORD ccMax=countof(cmd);
+  sizd=sizeof(DWORD);
+  for (int i=0;(RegEnumValue(Key,i,cmd,&ccMax,0,&t,(BYTE*)&d,&sizd)==ERROR_SUCCESS);i++)
+  {
+    if((t==REG_DWORD) && strwldcmp(CmdLine,cmd))
+      return RegCloseKey(Key),d;
+    ccMax=countof(cmd);
+    sizd=sizeof(DWORD);
+  }
+  RegCloseKey(Key);
+  return Default;
 }
 
-BOOL AddToWhiteList(LPTSTR User,LPTSTR CmdLine,DWORD Flags/*=0*/)
+DWORD GetWhiteListFlags(LPCTSTR User,LPCTSTR CmdLine,DWORD Default)
+{
+  return GetRegListFlags(HKLM,WHTLSTKEY(User),CmdLine,Default);
+}
+
+BOOL IsInWhiteList(LPCTSTR User,LPCTSTR CmdLine,DWORD Flag)
+{
+  return (GetWhiteListFlags(User,CmdLine,0)&Flag)==Flag;
+}
+
+BOOL AddToWhiteList(LPCTSTR User,LPCTSTR CmdLine,DWORD Flags/*=0*/)
 {
   CBigResStr key(_T("%s\\%s"),SVCKEY,User);
   DWORD d=GetRegInt(HKLM,key,CmdLine,-1);
   return (d==Flags)||SetRegInt(HKLM,key,CmdLine,Flags);
 }
 
-DWORD GetWhiteListFlags(LPTSTR User,LPTSTR CmdLine,DWORD Default)
-{
-  return GetRegInt(HKLM,WHTLSTKEY(User),CmdLine,Default);
-}
-
-BOOL SetWhiteListFlag(LPTSTR User,LPTSTR CmdLine,DWORD Flag,bool Enable)
+BOOL SetWhiteListFlag(LPCTSTR User,LPCTSTR CmdLine,DWORD Flag,bool Enable)
 {
   DWORD d0=GetWhiteListFlags(User,CmdLine,0);
   DWORD d1=(d0 &(~Flag))|(Enable?Flag:0);
@@ -133,7 +135,7 @@ BOOL SetWhiteListFlag(LPTSTR User,LPTSTR CmdLine,DWORD Flag,bool Enable)
   return (d1==d0)||SetRegInt(HKLM,WHTLSTKEY(User),CmdLine,d1);
 }
 
-BOOL ToggleWhiteListFlag(LPTSTR User,LPTSTR CmdLine,DWORD Flag)
+BOOL ToggleWhiteListFlag(LPCTSTR User,LPCTSTR CmdLine,DWORD Flag)
 {
   DWORD d=GetWhiteListFlags(User,CmdLine,0);
   if(d&Flag)
@@ -156,9 +158,34 @@ BOOL ToggleWhiteListFlag(LPTSTR User,LPTSTR CmdLine,DWORD Flag)
   return SetRegInt(HKLM,WHTLSTKEY(User),CmdLine,d);
 }
 
-BOOL RemoveFromWhiteList(LPTSTR User,LPTSTR CmdLine)
+BOOL RemoveFromWhiteList(LPCTSTR User,LPCTSTR CmdLine)
 {
   return RegDelVal(HKLM,WHTLSTKEY(User),CmdLine);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// 
+//  BlackList for IATHook
+// 
+//////////////////////////////////////////////////////////////////////////////
+DWORD GetBlackListFlags(LPCTSTR CmdLine,DWORD Default)
+{
+  return GetRegListFlags(HKLM,HKLSTKEY,CmdLine,Default);
+}
+
+BOOL IsInBlackList(LPCTSTR CmdLine)
+{
+  return GetBlackListFlags(CmdLine,-1)!=-1;
+}
+
+BOOL AddToBlackList(LPCTSTR CmdLine)
+{
+  return SetRegInt(HKLM,HKLSTKEY,CmdLine,1);
+}
+
+BOOL RemoveFromBlackList(LPCTSTR CmdLine)
+{
+  return RegDelVal(HKLM,HKLSTKEY,CmdLine);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -175,34 +202,36 @@ void ReplaceRunAsWithSuRun(HKEY hKey/*=HKCR*/)
     if (_tcsicmp(s,L"CLSID")==0)
     {
       HKEY h;
-      if(ERROR_SUCCESS==RegOpenKey(hKey,s,&h))
+      if(ERROR_SUCCESS==RegOpenKeyEx(hKey,s,0,KSAM(KEY_ALL_ACCESS),&h))
         ReplaceRunAsWithSuRun(h);
     }
     else
     {
       TCHAR v[4096];
       DWORD n=4096;
-      DWORD t=REG_SZ;
-      BOOL bOk=GetRegAny(hKey,CResStr(L"%s\\%s",s,L"shell\\runas\\command"),L"",t,(BYTE*)&v,&n);
-      //Preserve REG_EXPAND_SZ:
-      if (!bOk)
-      {
-        n=4096;
-        t=REG_EXPAND_SZ;
-        bOk=GetRegAny(hKey,CResStr(L"%s\\%s",s,L"shell\\runas\\command"),L"",t,(BYTE*)&v,&n);
-      }
+      DWORD t=0;
+      BOOL bOk=GetRegAnyPtr(hKey,CResStr(L"%s\\%s",s,L"shell\\runas\\command"),L"",&t,(BYTE*)&v,&n);
       if (bOk 
+        && ((t==REG_SZ)||(t==REG_EXPAND_SZ))
         && RenameRegKey(hKey,CResStr(L"%s\\%s",s,L"shell\\runas"),CResStr(L"%s\\%s",s,L"shell\\RunAsSuRun")))
       {
+        //Preserve original command:
+        SetRegAny(hKey,CResStr(L"%s\\%s",s,L"shell\\RunAsSuRun"),L"SuRunWasHere",t,(BYTE*)&v,n);
+        //Set command
         TCHAR cmd[4096];
         GetSystemWindowsDirectory(cmd,4096);
         PathAppend(cmd,L"SuRun.exe");
         PathQuoteSpaces(cmd);
         _tcscat(cmd,L" /RUNAS ");
         _tcscat(cmd,v);
-        SetRegAny(hKey,CResStr(L"%s\\%s",s,L"shell\\RunAsSuRun"),L"SuRunWasHere",t,(BYTE*)&v,n);
         SetRegAny(hKey,CResStr(L"%s\\%s",s,L"shell\\RunAsSuRun\\command"),L"",t,
           (BYTE*)&cmd,(DWORD)_tcslen(cmd)*sizeof(TCHAR));
+        //Preserve original command name:
+        n=4096;
+        zero(v);
+        GetRegAnyPtr(hKey,CResStr(L"%s\\%s",s,L"shell\\runas"),L"",&t,(BYTE*)&v,&n);
+        SetRegAny(hKey,CResStr(L"%s\\%s",s,L"shell\\RunAsSuRun"),L"orgname",t,(BYTE*)&v,n);
+        //Set SuRun command name
         SetRegStr(hKey,CResStr(L"%s\\%s",s,L"shell\\RunAsSuRun"),L"",CResStr(IDS_RUNAS));
       }
     }
@@ -218,28 +247,36 @@ void ReplaceSuRunWithRunAs(HKEY hKey/*=HKCR*/)
     if (_tcsicmp(s,L"CLSID")==0)
     {
       HKEY h;
-      if(ERROR_SUCCESS==RegOpenKey(hKey,s,&h))
+      if(ERROR_SUCCESS==RegOpenKeyEx(hKey,s,0,KSAM(KEY_ALL_ACCESS),&h))
         ReplaceSuRunWithRunAs(h);
     }
     else
     {
       TCHAR v[4096];
       DWORD n=4096;
-      DWORD t=REG_SZ;
-      BOOL bOk=GetRegAny(hKey,CResStr(L"%s\\%s",s,L"shell\\RunAsSuRun"),
-                         L"SuRunWasHere",t,(BYTE*)&v,&n);
-      //Preserve REG_EXPAND_SZ:
-      if (!bOk)
-      {
-        n=4096;
-        t=REG_EXPAND_SZ;
-        bOk=GetRegAny(hKey,CResStr(L"%s\\%s",s,L"shell\\RunAsSuRun"),L"SuRunWasHere",t,(BYTE*)&v,&n);
-      }
+      DWORD t=0;
+      BOOL bOk=GetRegAnyPtr(hKey,CResStr(L"%s\\%s",s,L"shell\\RunAsSuRun"),
+                         L"SuRunWasHere",&t,(BYTE*)&v,&n);
       if ( bOk
+        && ((t==REG_SZ)||(t==REG_EXPAND_SZ))
         && RegDelVal(hKey,CResStr(L"%s\\%s",s,L"shell\\RunAsSuRun"),L"SuRunWasHere")
         && RenameRegKey(hKey,CResStr(L"%s\\%s",s,L"shell\\RunAsSuRun"),CResStr(L"%s\\%s",s,L"shell\\runas")))
+      {
+        //Restore original command
         SetRegAny(hKey,CResStr(L"%s\\%s",s,L"shell\\runas\\command"),L"",t,
-                  (BYTE*)&v,(DWORD)_tcslen(v)*sizeof(TCHAR));
+          (BYTE*)&v,(DWORD)_tcslen(v)*sizeof(TCHAR));
+        //Restore  original command name:
+        n=4096;
+        zero(v);
+        if(GetRegAnyPtr(hKey,CResStr(L"%s\\%s",s,L"shell\\runas"),L"orgname",&t,(BYTE*)&v,&n))
+        {
+          if (v[0])
+            SetRegAny(hKey,CResStr(L"%s\\%s",s,L"shell\\runas"),L"",t,(BYTE*)&v,n);
+          else
+            RegDelVal(hKey,CResStr(L"%s\\%s",s,L"shell\\runas"),0);
+          RegDelVal(hKey,CResStr(L"%s\\%s",s,L"shell\\runas"),L"orgname");
+        }
+      }
     }
   }
 }
@@ -263,10 +300,12 @@ bool IsWin2k()
 //  Setup Dialog Data
 // 
 //////////////////////////////////////////////////////////////////////////////
-#define nTabs 3
+#define nTabs 4
 typedef struct _SETUPDATA 
 {
   USERLIST Users;
+  LPCTSTR OrgUser;
+  DWORD SessID;
   int CurUser;
   HICON UserIcon;
   HWND hTabCtrl[nTabs];
@@ -275,18 +314,33 @@ typedef struct _SETUPDATA
   HIMAGELIST ImgList;
   int ImgIconIdx[8];
   TCHAR NewUser[2*UNLEN+2];
-  _SETUPDATA()
+  CDlgAnchor MainSetupAnchor;
+  CDlgAnchor Setup2Anchor;
+  int MinW;
+  int MinH;
+  _SETUPDATA(DWORD SessionID,LPCTSTR User)
   {
-    Users.SetGroupUsers(SURUNNERSGROUP,FALSE);
+    MinW=600;
+    MinH=400;
+    OrgUser=User;
+    SessID=SessionID;
+    Users.SetSurunnersUsers(User,SessionID,FALSE);
+    CurUser=-1;
+    int i;
+    for (i=0;i<Users.GetCount();i++)
+      if (_tcsicmp(Users.GetUserName(i),OrgUser)==0)
+      {
+        CurUser=i;
+        break;
+      }
     DlgExitCode=IDCANCEL;
     HelpWnd=0;
     zero(hTabCtrl);
     zero(NewUser);
-    CurUser=-1;
     UserIcon=(HICON)LoadImage(GetModuleHandle(0),MAKEINTRESOURCE(IDI_MAINICON),
         IMAGE_ICON,48,48,0);
     ImgList=ImageList_Create(16,16,ILC_COLOR8,7,1);
-    for (int i=0;i<8;i++)
+    for (i=0;i<8;i++)
     {
       HICON icon=(HICON)LoadImage(GetModuleHandle(0),
         MAKEINTRESOURCE(IDI_LISTICON+i),IMAGE_ICON,0,0,0);
@@ -303,7 +357,6 @@ typedef struct _SETUPDATA
 
 //There can be only one Setup per Application. It's data is stored in g_SD
 static SETUPDATA *g_SD=NULL;
-
 
 //////////////////////////////////////////////////////////////////////////////
 // 
@@ -336,12 +389,12 @@ static void AddUsers(HWND hwnd,BOOL bDomainUsers)
 {
   HWND hUL=GetDlgItem(hwnd,IDC_USERLIST);
   USERLIST ul;
-  ul.SetGroupUsers(L"*",bDomainUsers);
+  ul.SetGroupUsers(L"*",g_SD->SessID,bDomainUsers);
   ListView_DeleteAllItems(hUL);
   for (int i=0;i<ul.GetCount();i++) 
   {
     LVITEM item={LVIF_TEXT,i,0,0,0,ul.GetUserName(i),0,0,0,0};
-    if (!IsInSuRunners(item.pszText))
+    if (!IsInSuRunners(item.pszText,g_SD->SessID))
       ListView_InsertItem(hUL,&item);
   }
   ListView_SortItemsEx(hUL,UsrListSortProc,hUL);
@@ -351,7 +404,6 @@ static void AddUsers(HWND hwnd,BOOL bDomainUsers)
   SetFocus(GetDlgItem(hwnd,IDC_USERNAME));
   SendMessage(GetDlgItem(hwnd,IDC_USERNAME),EM_SETSEL,0,-1);
 }
-
 
 INT_PTR CALLBACK SelUserDlgProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
 {
@@ -379,8 +431,12 @@ INT_PTR CALLBACK SelUserDlgProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
         if (lParam) switch(((LPNMHDR)lParam)->code)
         {
         //Mouse Click
-        case NM_CLICK:
         case NM_DBLCLK:
+          SetSelectedNameText(hwnd);
+          GetDlgItemText(hwnd,IDC_USERNAME,g_SD->NewUser,countof(g_SD->NewUser));
+          EndDialog(hwnd,1);
+          return TRUE;
+        case NM_CLICK:
         //Selection changed
         case LVN_ITEMCHANGED:
           SetSelectedNameText(hwnd);
@@ -412,32 +468,6 @@ INT_PTR CALLBACK SelUserDlgProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
 
 //////////////////////////////////////////////////////////////////////////////
 // 
-//  Help Dialog: White background, Cancel Button.
-// 
-//////////////////////////////////////////////////////////////////////////////
-
-INT_PTR CALLBACK HelpDlgProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
-{
-  switch(msg)
-  {
-  case WM_CTLCOLORSTATIC:
-    SetBkMode((HDC)wParam,TRANSPARENT);
-  case WM_CTLCOLORDLG:
-    return (BOOL)PtrToUlong(GetStockObject(WHITE_BRUSH));
-  case WM_COMMAND:
-    if (wParam==MAKELPARAM(IDCANCEL,BN_CLICKED))
-    {
-      g_SD->HelpWnd=0;
-      EnableWindow(GetDlgItem(g_SD->hTabCtrl[1],IDC_ICONHELP),1);
-      EndDialog(hwnd,0);
-      return TRUE;
-    }
-  }
-  return FALSE;
-}
-
-//////////////////////////////////////////////////////////////////////////////
-// 
 //  Service setup
 // 
 //////////////////////////////////////////////////////////////////////////////
@@ -447,32 +477,31 @@ INT_PTR CALLBACK HelpDlgProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
 // Add/Edit file to users file list:
 // 
 //////////////////////////////////////////////////////////////////////////////
+struct
+{
+  DWORD* Flags;
+  LPTSTR FileName;
+  int OfnTitle;
+}g_AppOpt;
+
 static BOOL ChooseFile(HWND hwnd,LPTSTR FileName)
 {
-  #define ExpAdvReg L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced"
-  int HideExt=GetRegInt(HKCU,ExpAdvReg,L"HideFileExt",-1);
-  SetRegInt(HKCU,ExpAdvReg,L"HideFileExt",0);
+  CImpersonateSessionUser ilu(g_SD->SessID);
   OPENFILENAME  ofn={0};
-  ofn.lStructSize       = OPENFILENAME_SIZE_VERSION_400;
+  ofn.lStructSize       = sizeof(OPENFILENAME);
   ofn.hwndOwner         = hwnd;
   ofn.lpstrFilter       = TEXT("*.*\0*.*\0\0"); 
   ofn.nFilterIndex      = 1;
   ofn.lpstrFile         = FileName;
   ofn.nMaxFile          = 4096;
-  ofn.lpstrTitle        = CResStr(IDS_ADDFILETOLIST);
+  ofn.lpstrTitle        = CResStr(g_AppOpt.OfnTitle);
   ofn.Flags             = OFN_ENABLESIZING|OFN_NOVALIDATE|OFN_FORCESHOWHIDDEN;
+  ofn.FlagsEx           = OFN_EX_NOPLACESBAR;
   BOOL bRet=GetOpenFileName(&ofn);
-  if (HideExt!=-1)
-    SetRegInt(HKCU,ExpAdvReg,L"HideFileExt",HideExt);
+  if (PathFileExists(FileName))
+    PathQuoteSpaces(FileName);
   return bRet;
-  #undef ExpAdvReg
 }
-
-struct
-{
-  DWORD* Flags;
-  LPTSTR FileName;
-}g_AppOpt;
 
 INT_PTR CALLBACK AppOptDlgProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
 {
@@ -480,28 +509,23 @@ INT_PTR CALLBACK AppOptDlgProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
   {
   case WM_INITDIALOG:
     SetDlgItemText(hwnd,IDC_FILENAME,g_AppOpt.FileName);
-    CheckDlgButton(hwnd,IDC_NOASK1,(*g_AppOpt.Flags&(FLAG_DONTASK|FLAG_AUTOCANCEL))==0);
-    CheckDlgButton(hwnd,IDC_NOASK2,(*g_AppOpt.Flags&FLAG_DONTASK)!=0);
-    CheckDlgButton(hwnd,IDC_NOASK3,(*g_AppOpt.Flags&FLAG_AUTOCANCEL)!=0);
-
-    CheckDlgButton(hwnd,IDC_AUTO1,(*g_AppOpt.Flags&(FLAG_SHELLEXEC|FLAG_CANCEL_SX))==0);
-    CheckDlgButton(hwnd,IDC_AUTO2,(*g_AppOpt.Flags&FLAG_SHELLEXEC)!=0);
-    CheckDlgButton(hwnd,IDC_AUTO3,(*g_AppOpt.Flags&FLAG_CANCEL_SX)!=0);
-
-    if((!IsDlgButtonChecked(g_SD->hTabCtrl[2],IDC_SHEXHOOK))
-      &&(!IsDlgButtonChecked(g_SD->hTabCtrl[2],IDC_IATHOOK)))
+    if (g_AppOpt.OfnTitle==IDS_ADDFILETOLIST)
     {
-      EnableWindow(GetDlgItem(hwnd,IDC_AUTO1),0);
-      EnableWindow(GetDlgItem(hwnd,IDC_AUTO2),0);
-      EnableWindow(GetDlgItem(hwnd,IDC_AUTO3),0);
-    }
-
-    CheckDlgButton(hwnd,IDC_RESTRICT1,(*g_AppOpt.Flags&FLAG_NORESTRICT)!=0);
-    CheckDlgButton(hwnd,IDC_RESTRICT2,(*g_AppOpt.Flags&FLAG_NORESTRICT)==0);
-    if(!IsDlgButtonChecked(g_SD->hTabCtrl[1],IDC_RESTRICTED))
-    {
-      EnableWindow(GetDlgItem(hwnd,IDC_RESTRICT1),0);
-      EnableWindow(GetDlgItem(hwnd,IDC_RESTRICT2),0);
+      CheckDlgButton(hwnd,IDC_NOASK1,(*g_AppOpt.Flags&(FLAG_DONTASK|FLAG_AUTOCANCEL))==0);
+      CheckDlgButton(hwnd,IDC_NOASK2,(*g_AppOpt.Flags&FLAG_DONTASK)!=0);
+      CheckDlgButton(hwnd,IDC_NOASK3,(*g_AppOpt.Flags&FLAG_AUTOCANCEL)!=0);
+      
+      CheckDlgButton(hwnd,IDC_AUTO1,(*g_AppOpt.Flags&(FLAG_SHELLEXEC|FLAG_CANCEL_SX))==0);
+      CheckDlgButton(hwnd,IDC_AUTO2,(*g_AppOpt.Flags&FLAG_SHELLEXEC)!=0);
+      CheckDlgButton(hwnd,IDC_AUTO3,(*g_AppOpt.Flags&FLAG_CANCEL_SX)!=0);
+      
+      if((!IsDlgButtonChecked(g_SD->hTabCtrl[2],IDC_SHEXHOOK))
+        &&(!IsDlgButtonChecked(g_SD->hTabCtrl[2],IDC_IATHOOK)))
+      {
+        EnableWindow(GetDlgItem(hwnd,IDC_AUTO1),0);
+        EnableWindow(GetDlgItem(hwnd,IDC_AUTO2),0);
+        EnableWindow(GetDlgItem(hwnd,IDC_AUTO3),0);
+      }
     }
     return TRUE;
   case WM_CTLCOLORSTATIC:
@@ -521,17 +545,32 @@ INT_PTR CALLBACK AppOptDlgProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
       return TRUE;
     case MAKELPARAM(IDOK,BN_CLICKED):
       GetDlgItemText(hwnd,IDC_FILENAME,g_AppOpt.FileName,4096);
-      *g_AppOpt.Flags=0;
-      if (IsDlgButtonChecked(hwnd,IDC_NOASK2))
-        *g_AppOpt.Flags|=FLAG_DONTASK;
-      if (IsDlgButtonChecked(hwnd,IDC_NOASK3))
-        *g_AppOpt.Flags|=FLAG_AUTOCANCEL;
-      if (IsDlgButtonChecked(hwnd,IDC_AUTO2))
-        *g_AppOpt.Flags|=FLAG_SHELLEXEC;
-      if (IsDlgButtonChecked(hwnd,IDC_AUTO3))
-        *g_AppOpt.Flags|=FLAG_CANCEL_SX;
-      if (IsDlgButtonChecked(hwnd,IDC_RESTRICT1))
-        *g_AppOpt.Flags|=FLAG_NORESTRICT;
+      if (g_AppOpt.OfnTitle==IDS_ADDFILETOLIST)
+      {
+        //Test drive:
+        STARTUPINFO si={0};
+        si.cb	= sizeof(si);
+        PROCESS_INFORMATION pi={0};
+        if (CreateProcess(NULL,g_AppOpt.FileName,NULL,NULL,FALSE,
+          CREATE_SUSPENDED|CREATE_UNICODE_ENVIRONMENT,0,NULL,&si,&pi))
+        {
+          TerminateProcess(pi.hProcess,0);
+          CloseHandle(pi.hThread);
+          CloseHandle(pi.hProcess);
+        }else
+          if (SafeMsgBox(hwnd,CBigResStr(IDS_APPOK),CResStr(IDS_APPNAME),
+            MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2)==IDNO)
+            return TRUE;
+        *g_AppOpt.Flags=0;
+        if (IsDlgButtonChecked(hwnd,IDC_NOASK2))
+          *g_AppOpt.Flags|=FLAG_DONTASK;
+        if (IsDlgButtonChecked(hwnd,IDC_NOASK3))
+          *g_AppOpt.Flags|=FLAG_AUTOCANCEL;
+        if (IsDlgButtonChecked(hwnd,IDC_AUTO2))
+          *g_AppOpt.Flags|=FLAG_SHELLEXEC;
+        if (IsDlgButtonChecked(hwnd,IDC_AUTO3))
+          *g_AppOpt.Flags|=FLAG_CANCEL_SX;
+      }
       EndDialog(hwnd,IDOK);
       return TRUE;
     }
@@ -539,16 +578,185 @@ INT_PTR CALLBACK AppOptDlgProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
   return FALSE;
 }
 
-static BOOL GetFileName(HWND hwnd,DWORD& Flags,LPTSTR FileName)
+static BOOL GetFileName(HWND hwnd,DWORD& Flags,LPTSTR FileName,
+                        int DlgID=IDD_APPOPTIONS,int OfnTitle=IDS_ADDFILETOLIST)
 {
-  if (FileName[0]==0)
+  if ((DlgID==IDD_APPOPTIONS)&&(FileName[0]==0))
   {
     if(!ChooseFile(hwnd,FileName))
       return FALSE;
   }
   g_AppOpt.FileName=FileName;
   g_AppOpt.Flags=&Flags;
-  return DialogBox(GetModuleHandle(0),MAKEINTRESOURCE(IDD_APPOPTIONS),hwnd,AppOptDlgProc)==IDOK;
+  g_AppOpt.OfnTitle=OfnTitle;
+  return DialogBox(GetModuleHandle(0),MAKEINTRESOURCE(DlgID),hwnd,AppOptDlgProc)==IDOK;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// 
+// Add/Edit file to IAT-Hook Blacklist:
+// 
+//////////////////////////////////////////////////////////////////////////////
+static void FillBlackList(HWND hwnd)
+{
+  HWND hBL=GetDlgItem(hwnd,IDC_BLACKLIST);
+  ListView_DeleteAllItems(hBL);
+  HKEY Key;
+  if(RegOpenKeyEx(HKLM,HKLSTKEY,0,KSAM(KEY_READ),&Key)==ERROR_SUCCESS)
+  {
+    TCHAR cmd[4096];
+    DWORD ccMax=countof(cmd);
+    for (int i=0;(RegEnumValue(Key,i,cmd,&ccMax,0,0,0,0)==ERROR_SUCCESS);i++)
+    {
+      ccMax=countof(cmd);
+      LVITEM item={LVIF_TEXT,i,0,0,0,cmd,0,0,0,0};
+      ListView_InsertItem(hBL,&item);
+    }
+    RegCloseKey(Key);
+  }
+  ListView_SortItemsEx(hBL,UsrListSortProc,hBL);
+  ListView_SetColumnWidth(hBL,0,LVSCW_AUTOSIZE_USEHEADER);
+  ListView_SetItemState(hBL,0,LVIS_FOCUSED|LVIS_SELECTED,LVIS_FOCUSED|LVIS_SELECTED);
+  int cSel=ListView_GetSelectedCount(hBL);
+  EnableWindow(GetDlgItem(hwnd,IDC_DELETE),cSel>=1);
+  EnableWindow(GetDlgItem(hwnd,IDC_EDITAPP),cSel==1);
+}
+
+INT_PTR CALLBACK BlkLstDlgProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
+{
+  switch(msg)
+  {
+  case WM_INITDIALOG:
+    {
+      HWND hBL=GetDlgItem(hwnd,IDC_BLACKLIST);
+      SendMessage(hBL,LVM_SETEXTENDEDLISTVIEWSTYLE,0,LVS_EX_INFOTIP);
+      LVCOLUMN col={LVCF_WIDTH,0,22,0,0,0,0,0};
+      ListView_InsertColumn(hBL,0,&col);
+      FillBlackList(hwnd);
+    }
+    return TRUE;
+  case WM_CTLCOLORSTATIC:
+    SetBkMode((HDC)wParam,TRANSPARENT);
+  case WM_CTLCOLORDLG:
+    return (BOOL)PtrToUlong(GetStockObject(WHITE_BRUSH));
+  case WM_COMMAND:
+    switch (wParam)
+    {
+    case MAKELPARAM(IDC_ADDAPP,BN_CLICKED):
+      {
+        TCHAR cmd[4096]={0};
+        DWORD f=0;
+        if (GetFileName(hwnd,f,cmd,IDD_ADDTOBLKLST,IDS_ADDTOBLKLIST) && cmd[0])
+        {
+          AddToBlackList(cmd);
+          FillBlackList(hwnd);
+        }
+      }
+      return TRUE;
+    //Edit App Button
+    case MAKELPARAM(IDC_EDITAPP,BN_CLICKED):
+      {
+EditApp:
+        HWND hBL=GetDlgItem(hwnd,IDC_BLACKLIST);
+        int nSel=ListView_GetSelectionMark(hBL);
+        int cSel=ListView_GetSelectedCount(hBL);
+        if ((nSel>=0)&&(cSel==1))
+        {
+          TCHAR cmd[4096];
+          TCHAR CMD[4096];
+          ListView_GetItemText(hBL,nSel,0,cmd,4096);
+          _tcscpy(CMD,cmd);
+          DWORD f=0;
+          if ( GetFileName(hwnd,f,CMD,IDD_ADDTOBLKLST,IDS_ADDTOBLKLIST)
+            && (CMD[0]) &&(_tcsicmp(CMD,cmd)!=0))
+          {
+            if((GetRegInt(HKLM,HKLSTKEY,CMD,-1)==-1) //No duplicates!
+              && RemoveFromBlackList(cmd))
+            {
+              AddToBlackList(CMD);
+              FillBlackList(hwnd);
+            }else
+              MessageBeep(MB_ICONERROR);
+          }
+        }
+      }
+      return TRUE;
+    //Delete App Button
+    case MAKELPARAM(IDC_DELETE,BN_CLICKED):
+      {
+DelApp: HWND hBL=GetDlgItem(hwnd,IDC_BLACKLIST);
+        int cSel=ListView_GetSelectedCount(hBL);
+        if (cSel>0) for (int n=0;n<ListView_GetItemCount(hBL);)
+        {
+          if (ListView_GetItemState(hBL,n,LVIS_SELECTED))
+          {
+            TCHAR cmd[4096];
+            ListView_GetItemText(hBL,n,0,cmd,4096);
+            if(RemoveFromBlackList(cmd))
+            {
+              ListView_DeleteItem(hBL,n);
+            }else
+              MessageBeep(MB_ICONERROR);
+          }else
+            n++;
+        }
+        int nSel=ListView_GetSelectionMark(hBL);
+        if (nSel>=0)
+          ListView_SetItemState(hBL,nSel,LVIS_SELECTED,0x0F);
+        EnableWindow(GetDlgItem(hwnd,IDC_DELETE),nSel>=0);
+        EnableWindow(GetDlgItem(hwnd,IDC_EDITAPP),nSel>=0);
+      }
+      return TRUE;
+    case MAKELPARAM(IDCANCEL,BN_CLICKED):
+    case MAKELPARAM(IDOK,BN_CLICKED):
+      EndDialog(hwnd,IDCANCEL);
+      return TRUE;
+    }//WM_COMMAND
+  case WM_NOTIFY:
+    {
+      switch (wParam)
+      {
+      //Program List Notifications
+      case IDC_BLACKLIST:
+        if (lParam) switch(((LPNMHDR)lParam)->code)
+        {
+        case LVN_KEYDOWN:
+          switch (((LPNMLVKEYDOWN)lParam)->wVKey)
+          {
+          case VK_F2:
+            goto EditApp;
+          case VK_DELETE:
+            goto DelApp;
+          case (WORD)'A':
+            if (GetKeyState(VK_CONTROL)&0x8000)
+            {
+              HWND hBL=GetDlgItem(hwnd,IDC_BLACKLIST);
+              if(ListView_GetItemCount(hBL))
+              {
+                for (int n=0;n<ListView_GetItemCount(hBL);n++)
+                  ListView_SetItemState(hBL,n,LVIS_SELECTED,0x0F);
+                ListView_SetItemState(hBL,0,LVIS_SELECTED|LVIS_FOCUSED,LVIS_SELECTED|LVIS_FOCUSED);
+              }
+              return TRUE;
+            }
+          }
+          break;
+        //Mouse Click: Toggle Flags
+        case NM_DBLCLK:
+          goto EditApp;
+        //Selection changed
+        case LVN_ITEMCHANGED:
+          EnableWindow(GetDlgItem(hwnd,IDC_DELETE),
+            ListView_GetSelectedCount(GetDlgItem(hwnd,IDC_BLACKLIST))>=1);
+          EnableWindow(GetDlgItem(hwnd,IDC_EDITAPP),
+            ListView_GetSelectedCount(GetDlgItem(hwnd,IDC_BLACKLIST))==1);
+          return TRUE;
+        }//switch (switch(((LPNMHDR)lParam)->code)
+      }//switch (wParam)
+      break;
+    }//WM_NOTIFY
+  }
+  return FALSE;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -563,17 +771,15 @@ static void SaveUserFlags()
     LPTSTR u=g_SD->Users.GetUserName(g_SD->CurUser);
     SetNoRunSetup(u,IsDlgButtonChecked(g_SD->hTabCtrl[1],IDC_RUNSETUP)==0);
     SetRestrictApps(u,IsDlgButtonChecked(g_SD->hTabCtrl[1],IDC_RESTRICTED)!=0);
-    switch (IsDlgButtonChecked(g_SD->hTabCtrl[1],IDC_TRAYSHOWADMIN))
+    SetHideFromUser(u,IsDlgButtonChecked(g_SD->hTabCtrl[1],IDC_HIDESURUN)!=0);
+    SetReqPw4Setup(u,IsDlgButtonChecked(g_SD->hTabCtrl[1],IDC_REQPW4SETUP)!=0);
+    if(!IsDlgButtonChecked(g_SD->hTabCtrl[1],IDC_TRAYSHOWADMIN))
     {
-    case BST_INDETERMINATE:
-      DelUserTSA(u);
-      break;
-    case BST_UNCHECKED:
       SetUserTSA(u,0);
-      break;
-    case BST_CHECKED:
-      SetUserTSA(u,1+(DWORD)(IsDlgButtonChecked(g_SD->hTabCtrl[1],IDC_TRAYBALLOON)!=0));
-      break;
+    }
+    else
+    {
+      SetUserTSA(u,1+(DWORD)IsDlgButtonChecked(g_SD->hTabCtrl[1],IDC_TRAYBALLOON));
     }
   }
 }
@@ -587,8 +793,8 @@ static int CALLBACK ListSortProc(LPARAM lParam1, LPARAM lParam2, LPARAM lParamSo
 {
   TCHAR s1[4096];
   TCHAR s2[4096];
-  ListView_GetItemText((HWND)lParamSort,lParam1,3,s1,4096);
-  ListView_GetItemText((HWND)lParamSort,lParam2,3,s2,4096);
+  ListView_GetItemText((HWND)lParamSort,lParam1,2,s1,4096);
+  ListView_GetItemText((HWND)lParamSort,lParam2,2,s2,4096);
   return _tcsicmp(s1,s2);
 }
 
@@ -598,7 +804,7 @@ static void UpdateWhiteListFlags(HWND hWL)
   TCHAR cmd[4096];
   for (int i=0;i<ListView_GetItemCount(hWL);i++)
   {
-    ListView_GetItemText(hWL,i,3,cmd,4096);
+    ListView_GetItemText(hWL,i,2,cmd,4096);
     int Flags=GetRegInt(HKLM,wlkey,cmd,0);
     LVITEM item={LVIF_IMAGE,i,0,0,0,0,0,
       g_SD->ImgIconIdx[2+(Flags&FLAG_DONTASK?1:0)+(Flags&FLAG_AUTOCANCEL?4:0)],
@@ -607,15 +813,11 @@ static void UpdateWhiteListFlags(HWND hWL)
     item.iSubItem=1;
     item.iImage=g_SD->ImgIconIdx[(Flags&FLAG_SHELLEXEC?0:1)+(Flags&FLAG_CANCEL_SX?6:0)];
     ListView_SetItem(hWL,&item);
-    item.iSubItem=2;
-    item.iImage=g_SD->ImgIconIdx[4+(Flags&FLAG_NORESTRICT?0:1)];
-    ListView_SetItem(hWL,&item);
   }
   ListView_SetColumnWidth(hWL,1,
      (IsDlgButtonChecked(g_SD->hTabCtrl[2],IDC_SHEXHOOK)
    ||IsDlgButtonChecked(g_SD->hTabCtrl[2],IDC_IATHOOK))?22:0);
-  ListView_SetColumnWidth(hWL,2,IsDlgButtonChecked(g_SD->hTabCtrl[1],IDC_RESTRICTED)?22:0);
-  ListView_SetColumnWidth(hWL,3,LVSCW_AUTOSIZE_USEHEADER);
+  ListView_SetColumnWidth(hWL,2,LVSCW_AUTOSIZE_USEHEADER);
   InvalidateRect(hWL,0,TRUE);
 }
 
@@ -640,17 +842,30 @@ static void UpdateUser(HWND hwnd)
     LPTSTR u=g_SD->Users.GetUserName(g_SD->CurUser);
     bm=g_SD->Users.GetUserBitmap(n);
     EnableWindow(GetDlgItem(hwnd,IDC_USER),1);
-    EnableWindow(GetDlgItem(hwnd,IDC_DELUSER),1);
+    EnableWindow(GetDlgItem(hwnd,IDC_DELUSER),GetUseSuRunGrp);
+    EnableWindow(GetDlgItem(hwnd,IDC_IMPORT),1);
+    EnableWindow(GetDlgItem(hwnd,IDC_EXPORT),1);
     EnableWindow(GetDlgItem(hwnd,IDC_RESTRICTED),1);
     CheckDlgButton(hwnd,IDC_RUNSETUP,!GetNoRunSetup(u));
     EnableWindow(GetDlgItem(hwnd,IDC_RUNSETUP),1);
+    EnableWindow(GetDlgItem(hwnd,IDC_HIDESURUN),1);
     CheckDlgButton(hwnd,IDC_RESTRICTED,GetRestrictApps(u));
+    CheckDlgButton(hwnd,IDC_HIDESURUN,GetHideFromUser(u));
+    if(GetNoRunSetup(u))
+    {
+      EnableWindow(GetDlgItem(hwnd,IDC_REQPW4SETUP),0);
+      CheckDlgButton(hwnd,IDC_REQPW4SETUP,0);
+    }else
+    {
+      EnableWindow(GetDlgItem(hwnd,IDC_REQPW4SETUP),1);
+      CheckDlgButton(hwnd,IDC_REQPW4SETUP,GetReqPw4Setup(u));
+    }
     //TSA:
     //Win2k:no balloon tips
     EnableWindow(GetDlgItem(hwnd,IDC_TRAYSHOWADMIN),1);
     EnableWindow(GetDlgItem(hwnd,IDC_TRAYBALLOON),0);
     CheckDlgButton(hwnd,IDC_TRAYBALLOON,BST_UNCHECKED);
-    CheckDlgButton(hwnd,IDC_TRAYSHOWADMIN,BST_INDETERMINATE);
+    CheckDlgButton(hwnd,IDC_TRAYSHOWADMIN,BST_UNCHECKED);
     switch(GetUserTSA(u))
     {
     case 2:
@@ -660,30 +875,53 @@ static void UpdateUser(HWND hwnd)
         EnableWindow(GetDlgItem(hwnd,IDC_TRAYBALLOON),1);
       CheckDlgButton(hwnd,IDC_TRAYSHOWADMIN,BST_CHECKED);
       break;
-    case 0:
+    }
+    if(GetHideFromUser(u))
+    {
+      EnableWindow(GetDlgItem(hwnd,IDC_TRAYSHOWADMIN),0);
+      EnableWindow(GetDlgItem(hwnd,IDC_TRAYBALLOON),0);
+      EnableWindow(GetDlgItem(hwnd,IDC_REQPW4SETUP),0);
+      EnableWindow(GetDlgItem(hwnd,IDC_RESTRICTED),0);
+      EnableWindow(GetDlgItem(hwnd,IDC_RUNSETUP),0);
+      CheckDlgButton(hwnd,IDC_TRAYBALLOON,BST_UNCHECKED);
       CheckDlgButton(hwnd,IDC_TRAYSHOWADMIN,BST_UNCHECKED);
+      CheckDlgButton(hwnd,IDC_RUNSETUP,BST_UNCHECKED);
+      CheckDlgButton(hwnd,IDC_REQPW4SETUP,BST_UNCHECKED);
+      CheckDlgButton(hwnd,IDC_RESTRICTED,BST_CHECKED);
+      CheckDlgButton(hwnd,IDC_RUNSETUP,BST_UNCHECKED);
     }
     EnableWindow(hWL,true);
-    CBigResStr wlkey(_T("%s\\%s"),SVCKEY,u);
-    TCHAR cmd[4096];
-    for (int i=0;RegEnumValName(HKLM,wlkey,i,cmd,4096);i++)
+    HKEY Key;
+    if(RegOpenKeyEx(HKLM,WHTLSTKEY(u),0,KSAM(KEY_READ),&Key)==ERROR_SUCCESS)
     {
-      LVITEM item={LVIF_IMAGE,i,0,0,0,0,0,g_SD->ImgIconIdx[0],0,0};
-      ListView_SetItemText(hWL,ListView_InsertItem(hWL,&item),3,cmd);
+      TCHAR cmd[4096];
+      DWORD ccMax=countof(cmd);
+      for (int i=0;(RegEnumValue(Key,i,cmd,&ccMax,0,0,0,0)==ERROR_SUCCESS);i++)
+      {
+        ccMax=countof(cmd);
+        LVITEM item={LVIF_IMAGE,i,0,0,0,0,0,g_SD->ImgIconIdx[0],0,0};
+        ListView_SetItemText(hWL,ListView_InsertItem(hWL,&item),2,cmd);
+      }
+      RegCloseKey(Key);
     }
 
     ListView_SortItemsEx(hWL,ListSortProc,hWL);
     UpdateWhiteListFlags(hWL);
 
     EnableWindow(GetDlgItem(hwnd,IDC_ADDAPP),1);
-    EnableWindow(GetDlgItem(hwnd,IDC_DELETE),ListView_GetSelectionMark(hWL)!=-1);
-    EnableWindow(GetDlgItem(hwnd,IDC_EDITAPP),ListView_GetSelectionMark(hWL)!=-1);
+    int cSel=ListView_GetSelectedCount(hWL);
+    EnableWindow(GetDlgItem(hwnd,IDC_DELETE),cSel>=1);
+    EnableWindow(GetDlgItem(hwnd,IDC_EDITAPP),cSel==1);
   }else
   {
     EnableWindow(GetDlgItem(hwnd,IDC_USER),0);
     EnableWindow(GetDlgItem(hwnd,IDC_DELUSER),false);
+    EnableWindow(GetDlgItem(hwnd,IDC_IMPORT),0);
+    EnableWindow(GetDlgItem(hwnd,IDC_EXPORT),0);
     EnableWindow(GetDlgItem(hwnd,IDC_RESTRICTED),false);
     EnableWindow(GetDlgItem(hwnd,IDC_RUNSETUP),false);
+    EnableWindow(GetDlgItem(hwnd,IDC_HIDESURUN),false);
+    EnableWindow(GetDlgItem(hwnd,IDC_REQPW4SETUP),false);
     EnableWindow(GetDlgItem(hwnd,IDC_TRAYSHOWADMIN),false);
     EnableWindow(GetDlgItem(hwnd,IDC_TRAYBALLOON),false);
     EnableWindow(hWL,false);
@@ -710,7 +948,7 @@ static void UpdateUser(HWND hwnd)
 // Populate User Combobox and the Program list for the selected User
 // 
 //////////////////////////////////////////////////////////////////////////////
-static void UpdateUserList(HWND hwnd,LPTSTR UserName=g_RunData.UserName)
+static void UpdateUserList(HWND hwnd,LPCTSTR UserName)
 {
   SendDlgItemMessage(hwnd,IDC_USER,CB_RESETCONTENT,0,0);
   SendDlgItemMessage(hwnd,IDC_USER,CB_SETCURSEL,-1,0);
@@ -725,6 +963,522 @@ static void UpdateUserList(HWND hwnd,LPTSTR UserName=g_RunData.UserName)
   SendDlgItemMessage(hwnd,IDC_USER,CB_SETCURSEL,g_SD->CurUser,0);
   g_SD->CurUser=-1;
   UpdateUser(hwnd);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// 
+//  Import/Export
+// 
+//////////////////////////////////////////////////////////////////////////////
+BOOL WritePrivateProfileInt(LPCTSTR App, LPCTSTR Key, DWORD Val, LPCTSTR ini)
+{
+  TCHAR s[16]={0};
+  return WritePrivateProfileString(App,Key,_itot(Val,s,10),ini);
+}
+
+#define EXPORTINT(App,f,ini)    WritePrivateProfileInt(App,_T(#f),Get##f,ini)
+#define IMPORTINT(App,f,ini)    Set##f(GetPrivateProfileInt(App,_T(#f),Get##f,ini))
+
+#define EXPORTINTu(App,f,u,ini) WritePrivateProfileInt(App,_T(#f),Get##f(u),ini)
+#define IMPORTINTu(App,f,u,ini) Set##f(u,GetPrivateProfileInt(App,_T(#f),Get##f(u),ini))
+
+#define EXPORTSTR(App,n,s,ini) \
+  {\
+      TCHAR ts[16];\
+      WritePrivateProfileString(App,_itot(n,ts,10),s,ini);\
+  }
+
+#define IMPORTSTR(App,n,s,ini)\
+  {\
+      TCHAR ts[16];\
+      GetPrivateProfileString(App,_itot(n,ts,10),_T(""),s,countof(s),ini);\
+  }
+
+#define EXPORTVAL(App,n,v,ini) \
+  {\
+      TCHAR ts[16];\
+      WritePrivateProfileInt(App,_itot(n,ts,10),v,ini);\
+  }
+
+#define IMPORTVAL(App,n,d,ini)\
+  {\
+      TCHAR ts[16];\
+      d=GetPrivateProfileInt(App,_itot(n,ts,10),d,ini);\
+  }
+
+void ExportUserWhiteList(LPCTSTR ini,LPCTSTR User,LPCTSTR WLKEY,LPCTSTR WLFKEY)
+{
+  HKEY Key;
+  //Export user list
+  if(RegOpenKeyEx(HKLM,WHTLSTKEY(User),0,KSAM(KEY_READ),&Key)==ERROR_SUCCESS)
+  {
+    TCHAR cmd[4096];
+    _tcscpy(cmd,_T("\"")); //Quote strings!
+    DWORD ccMax=countof(cmd)-2;
+    DWORD Flags=0;
+    DWORD siz=sizeof(Flags);
+    for (int i=0;(RegEnumValue(Key,i,&cmd[1],&ccMax,0,0,(BYTE*)&Flags,&siz)==ERROR_SUCCESS);i++)
+    {
+      ccMax=countof(cmd);
+      siz=sizeof(Flags);
+      _tcscat(cmd,_T("\"")); //Quote strings!
+      EXPORTSTR(WLKEY,i,cmd,ini);
+      EXPORTVAL(WLFKEY,i,Flags,ini);
+      _tcscpy(cmd,_T("\"")); //Quote strings!
+
+    }
+    RegCloseKey(Key);
+  }
+}
+
+void ExportUser(LPCTSTR ini,LPCTSTR User,int nUser)
+{
+  CResStr USRKEY(_T("User%d"),nUser);
+  CResStr WLKEY(_T("WhiteList%d"),nUser);
+  CResStr WLFKEY(_T("WhiteListFlags%d"),nUser);
+  //Detect local users: 
+  //These users will be imported to local users on the target machine
+  //Domain users will be imported to domain users on the target machine
+  TCHAR cn[UNLEN+1]={0};
+  DWORD cnl=UNLEN;
+  GetComputerName(cn,&cnl);
+  TCHAR dn[2*UNLEN+1]={0};
+  _tcscpy(dn,User);
+  PathRemoveFileSpec(dn);
+  BOOL IsLocal=_tcsicmp(dn,cn)==0;
+  _tcscpy(dn,User);
+  PathStripPath(dn);
+  WritePrivateProfileString(USRKEY,_T("Name"),IsLocal?dn:User,ini);
+  WritePrivateProfileInt(USRKEY,_T("IsLocalUser"),IsLocal,ini);
+  //Export user settings
+  EXPORTINTu(USRKEY,NoRunSetup,User,ini);
+  EXPORTINTu(USRKEY,RestrictApps,User,ini);
+  EXPORTINTu(USRKEY,UserTSA,User,ini);
+  EXPORTINTu(USRKEY,HideFromUser,User,ini);
+  EXPORTINTu(USRKEY,ReqPw4Setup,User,ini);
+  ExportUserWhiteList(ini,User,WLKEY,WLFKEY);
+}
+
+BOOL ImportUserWhiteList(LPCTSTR ini,LPCTSTR User,LPCTSTR WLKEY,LPCTSTR WLFKEY)
+{
+  CBigResStr key(_T("%s\\%s"),SVCKEY,User);
+  for (int i=0;;i++)
+  {
+    TCHAR cmd[4096];
+    cmd[0]=0;
+    IMPORTSTR(WLKEY,i,cmd,ini);
+    if (cmd[0])
+    {
+      DWORD d=0;
+      IMPORTVAL(WLFKEY,i,d,ini);
+      if (GetRegInt(HKLM,key,cmd,-1)==-1)
+        SetRegInt(HKLM,key,cmd,d);
+    }else
+      break;
+  }
+  return TRUE;
+}
+
+BOOL ImportUser(LPCTSTR ini,LPCTSTR USRKEY,LPCTSTR WLKEY,LPCTSTR WLFKEY)
+{
+  TCHAR User[2*UNLEN+1]={0};
+  GetPrivateProfileString(USRKEY,_T("Name"),NULL,User,countof(User),ini);
+  if (!User[0])
+    return FALSE;
+  BOOL IsLocal=GetPrivateProfileInt(USRKEY,_T("IsLocalUser"),1,ini);
+  if (IsLocal)
+  {
+    //Put User name after local computer name
+    TCHAR cn[2*UNLEN+1]={0};
+    DWORD cnl=2*UNLEN;
+    GetComputerName(cn,&cnl);
+    PathAppend(cn,User);
+    _tcscpy(User,cn);
+  }
+  AlterGroupMember(DOMAIN_ALIAS_RID_ADMINS,User,0);
+  AlterGroupMember(DOMAIN_ALIAS_RID_USERS,User,1);
+  if (GetUseSuRunGrp)
+  {
+    DWORD dwe=AlterGroupMember(SURUNNERSGROUP,User,1);
+    if (dwe && (dwe!=ERROR_MEMBER_IN_ALIAS))
+      return FALSE;
+  }
+  DelUsrSettings(User);
+  IMPORTINTu(USRKEY,NoRunSetup,User,ini);
+  IMPORTINTu(USRKEY,RestrictApps,User,ini);
+  IMPORTINTu(USRKEY,UserTSA,User,ini);
+  IMPORTINTu(USRKEY,HideFromUser,User,ini);
+  IMPORTINTu(USRKEY,ReqPw4Setup,User,ini);
+  return ImportUserWhiteList(ini,User,WLKEY,WLFKEY);
+}
+
+BOOL ImportUser(LPCTSTR ini,int nUser)
+{
+  CResStr USRKEY(_T("User%d"),nUser);
+  CResStr WLKEY(_T("WhiteList%d"),nUser);
+  CResStr WLFKEY(_T("WhiteListFlags%d"),nUser);
+  if (GetPrivateProfileInt(USRKEY,_T("IsLocalUser"),-1,ini)==-1)
+    return FALSE;
+  ImportUser(ini,USRKEY,WLKEY,WLFKEY);
+  return TRUE;
+}
+
+void ExportSettings(LPCTSTR ini)
+{
+  DeleteFile(ini);
+  CResStr SuRunKey(_T("SuRun"));
+  WritePrivateProfileString(SuRunKey,_T("Version"),GetVersionString(),ini);
+  //EXPORTINT("SuRun",UseSuRunGrp,ini);
+
+  EXPORTINT(SuRunKey,BlurDesk,ini);
+  EXPORTINT(SuRunKey,FadeDesk,ini);
+  EXPORTINT(SuRunKey,SavePW,ini);
+  
+  EXPORTINT(SuRunKey,PwTimeOut,ini);
+  EXPORTINT(SuRunKey,AdminNoPassWarn,ini);
+  
+  EXPORTINT(SuRunKey,CtrlAsAdmin,ini);
+  EXPORTINT(SuRunKey,CmdAsAdmin,ini);
+  EXPORTINT(SuRunKey,ExpAsAdmin,ini);
+  EXPORTINT(SuRunKey,RestartAsAdmin,ini);
+  EXPORTINT(SuRunKey,StartAsAdmin,ini);
+  
+  EXPORTINT(SuRunKey,HideExpertSettings,ini);
+  
+  EXPORTINT(SuRunKey,UseIShExHook,ini);
+  EXPORTINT(SuRunKey,UseIATHook,ini);
+  EXPORTINT(SuRunKey,TestReqAdmin,ini);
+  EXPORTINT(SuRunKey,ShowAutoRuns,ini);
+  
+//  WritePrivateProfileInt(SuRunKey,_T("ReplaceRunAs"),
+//    IsDlgButtonChecked(g_SD->hTabCtrl[3],IDC_DORUNAS),ini);
+//  if(GetUseSuRunGrp)
+//  {
+//    EXPORTINTu(SuRunKey,SetTime,SURUNNERSGROUP,ini);
+//    EXPORTINT(SuRunKey,SetEnergy,ini);
+//  }
+//  EXPORTINT(SuRunKey,WinUpd4All,ini);
+//  EXPORTINT(SuRunKey,WinUpdBoot,ini);
+//  EXPORTINT(SuRunKey,OwnerAdminGrp,ini);
+  
+  EXPORTINT(SuRunKey,ShowTrayAdmin,ini);
+  
+  EXPORTINT(SuRunKey,NoConvAdmin,ini);
+  EXPORTINT(SuRunKey,NoConvUser,ini);
+  EXPORTINT(SuRunKey,DefHideSuRun,ini);
+  HKEY Key;
+  if(RegOpenKeyEx(HKLM,HKLSTKEY,0,KSAM(KEY_READ),&Key)==ERROR_SUCCESS)
+  {
+    TCHAR cmd[4096];
+    _tcscpy(cmd,_T("\"")); //Quote strings!
+    DWORD ccMax=countof(cmd)-2;
+    for (int i=0;(RegEnumValue(Key,i,&cmd[1],&ccMax,0,0,0,0)==ERROR_SUCCESS);i++)
+    {
+      ccMax=countof(cmd)-2;
+      _tcscat(cmd,_T("\"")); //Quote strings!
+      EXPORTSTR(_T("BlackList"),i,cmd,ini);
+      _tcscpy(cmd,_T("\"")); //Quote strings!
+    }
+    RegCloseKey(Key);
+  }
+  for (int u=0;u<g_SD->Users.GetCount();u++)
+    ExportUser(ini,g_SD->Users.GetUserName(u),u);
+}
+
+static BOOL GetINIFile(HWND hwnd,LPTSTR FileName)
+{
+  CImpersonateSessionUser ilu(g_SD->SessID);
+  OPENFILENAME  ofn={0};
+  ofn.lStructSize       = sizeof(OPENFILENAME);
+  ofn.hwndOwner         = hwnd;
+  ofn.lpstrFilter       = TEXT("*.*\0*.*\0\0"); 
+  ofn.nFilterIndex      = 1;
+  ofn.lpstrFile         = FileName;
+  ofn.nMaxFile          = 4096;
+  ofn.lpstrTitle        = 0;
+  ofn.Flags             = OFN_ENABLESIZING|OFN_FORCESHOWHIDDEN|OFN_OVERWRITEPROMPT;
+  ofn.FlagsEx           = OFN_EX_NOPLACESBAR;
+  BOOL bRet=GetSaveFileName(&ofn);
+  return bRet;
+}
+
+void ImportSettings(LPCTSTR ini,bool bSuRunSettings,bool bBlackList,bool bUser)
+{
+  if (bSuRunSettings)
+  {
+    CResStr SuRunKey(_T("SuRun"));
+    //IMPORTINT(SuRunKey,UseSuRunGrp,ini);
+
+    IMPORTINT(SuRunKey,BlurDesk,ini);
+    IMPORTINT(SuRunKey,FadeDesk,ini);
+    IMPORTINT(SuRunKey,SavePW,ini);
+    
+    IMPORTINT(SuRunKey,PwTimeOut,ini);
+    IMPORTINT(SuRunKey,AdminNoPassWarn,ini);
+
+    IMPORTINT(SuRunKey,CtrlAsAdmin,ini);
+    IMPORTINT(SuRunKey,CmdAsAdmin,ini);
+    IMPORTINT(SuRunKey,ExpAsAdmin,ini);
+    IMPORTINT(SuRunKey,RestartAsAdmin,ini);
+    IMPORTINT(SuRunKey,StartAsAdmin,ini);
+    
+    IMPORTINT(SuRunKey,HideExpertSettings,ini);
+
+    IMPORTINT(SuRunKey,UseIShExHook,ini);
+    IMPORTINT(SuRunKey,UseIATHook,ini);
+    IMPORTINT(SuRunKey,TestReqAdmin,ini);
+    IMPORTINT(SuRunKey,ShowAutoRuns,ini);
+
+//    switch(GetPrivateProfileInt(SuRunKey,_T("ReplaceRunAs"),-1,ini))
+//    {
+//    case 0:
+//      ReplaceSuRunWithRunAs(); 
+//      break;
+//    case 1:
+//      ReplaceRunAsWithSuRun(); 
+//      break;
+//    }
+//    IMPORTINT(SuRunKey,OwnerAdminGrp,ini);
+//    IMPORTINT(SuRunKey,WinUpd4All,ini);
+//    IMPORTINT(SuRunKey,WinUpdBoot,ini);
+//    if(GetUseSuRunGrp)
+//    {
+//      IMPORTINT(SuRunKey,SetEnergy,ini);
+//      IMPORTINTu(SuRunKey,SetTime,SURUNNERSGROUP,ini);
+//    }
+
+    IMPORTINT(SuRunKey,ShowTrayAdmin,ini);
+    
+    IMPORTINT(SuRunKey,NoConvAdmin,ini);
+    IMPORTINT(SuRunKey,NoConvUser,ini);
+    IMPORTINT(SuRunKey,DefHideSuRun,ini);
+  }
+  if (bBlackList)
+  {
+    DelRegKey(HKLM,HKLSTKEY);
+    for (int i=0;;i++)
+    {
+      TCHAR cmd[4096];
+      IMPORTSTR(_T("BlackList"),i,cmd,ini);
+      if (cmd[0])
+        AddToBlackList(cmd);
+      else
+        break;
+    }
+  }
+  if(bUser)
+    for (int u=0;ImportUser(ini,u);u++);
+}
+
+static BOOL OpenINIFile(HWND hwnd,LPTSTR FileName)
+{
+  CImpersonateSessionUser ilu(g_SD->SessID);
+  OPENFILENAME  ofn={0};
+  ofn.lStructSize       = sizeof(OPENFILENAME);
+  ofn.hwndOwner         = hwnd;
+  ofn.lpstrFilter       = TEXT("*.*\0*.*\0\0"); 
+  ofn.nFilterIndex      = 1;
+  ofn.lpstrFile         = FileName;
+  ofn.nMaxFile          = 4096;
+  ofn.lpstrTitle        = 0;
+  ofn.Flags             = OFN_ENABLESIZING|OFN_FORCESHOWHIDDEN;
+  ofn.FlagsEx           = OFN_EX_NOPLACESBAR;
+  BOOL bRet=GetOpenFileName(&ofn);
+  return bRet;
+}
+
+INT_PTR CALLBACK ImportDlgProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
+{
+  switch(msg)
+  {
+  case WM_INITDIALOG:
+    {
+      CheckDlgButton(hwnd,IDC_IMPSURUNSETTINGS,1);
+      CheckDlgButton(hwnd,IDC_IMPBLACKLIST,1);
+      CheckDlgButton(hwnd,IDC_IMPUSRSETTINGS,1);
+      PostMessage(hwnd,WM_COMMAND,IDC_SELFILE,(LPARAM)GetDlgItem(hwnd,IDC_SELFILE));
+    }
+    return TRUE;
+  case WM_CTLCOLORSTATIC:
+    SetBkMode((HDC)wParam,TRANSPARENT);
+  case WM_CTLCOLORDLG:
+    return (BOOL)PtrToUlong(GetStockObject(WHITE_BRUSH));
+  case WM_COMMAND:
+    switch (wParam)
+    {
+    case MAKELPARAM(IDC_SELFILE,BN_CLICKED):
+      {
+        TCHAR f[4096]={0};
+        GetDlgItemText(hwnd,IDC_FILENAME,f,4096);
+        if(OpenINIFile(hwnd,f))
+        {
+          SetDlgItemText(hwnd,IDC_FILENAME,f);
+          TCHAR cmd[MAX_PATH];
+          bool bSRSet=GetPrivateProfileInt(L"SuRun",L"BlurDesk",-1,f)!=-1;
+          bool bBlLst=GetPrivateProfileString(L"BlackList",L"0",L"",cmd,MAX_PATH,f)!=0;
+          bool bUsrSet=GetPrivateProfileInt(L"User0",L"NoRunSetup",-1,f)!=-1;
+          CheckDlgButton(hwnd,IDC_IMPSURUNSETTINGS,bSRSet);
+          CheckDlgButton(hwnd,IDC_IMPBLACKLIST,bBlLst);
+          CheckDlgButton(hwnd,IDC_IMPUSRSETTINGS,bUsrSet);
+          EnableWindow(GetDlgItem(hwnd,IDC_IMPSURUNSETTINGS),bSRSet);
+          EnableWindow(GetDlgItem(hwnd,IDC_IMPBLACKLIST),bBlLst);
+          EnableWindow(GetDlgItem(hwnd,IDC_IMPUSRSETTINGS),bUsrSet);
+        }else 
+          if (f[0]==0)
+            EndDialog(hwnd,IDCANCEL);
+      }
+      break;
+    case MAKELPARAM(IDCANCEL,BN_CLICKED):
+      EndDialog(hwnd,IDCANCEL);
+      return TRUE;
+    case MAKELPARAM(IDOK,BN_CLICKED):
+      {
+        TCHAR f[4096]={0};
+        TCHAR cmd[MAX_PATH];
+        GetDlgItemText(hwnd,IDC_FILENAME,f,4096);
+        if (PathFileExists(f))
+        {
+          bool bSRSet=GetPrivateProfileInt(L"SuRun",L"BlurDesk",-1,f)!=-1;
+          bool bBlLst=GetPrivateProfileString(L"BlackList",L"0",L"",cmd,MAX_PATH,f)!=0;
+          bool bUsrSet=GetPrivateProfileInt(L"User0",L"IsLocalUser",-1,f)!=-1;
+          if(bSRSet || bBlLst || bUsrSet)
+          {
+            ImportSettings(f,
+              bSRSet && (IsDlgButtonChecked(hwnd,IDC_IMPSURUNSETTINGS)!=0),
+              bBlLst && (IsDlgButtonChecked(hwnd,IDC_IMPBLACKLIST)!=0),
+              bUsrSet && (IsDlgButtonChecked(hwnd,IDC_IMPUSRSETTINGS)!=0));
+            EndDialog(hwnd,IDOK);
+          }
+        }
+      }
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+static BOOL ImportSettings(HWND hwnd)
+{
+  return DialogBox(GetModuleHandle(0),MAKEINTRESOURCE(IDD_IMPORTSETTINGS),
+    hwnd,ImportDlgProc)==IDOK;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// 
+// SetRecommendedSettings()
+// 
+//////////////////////////////////////////////////////////////////////////////
+void SetUseSuRuners(BOOL bUse)
+{
+  return;
+  if (GetUseSuRunGrp==bUse)
+    return;
+  TCHAR u[MAX_PATH];
+  _tcscpy(u,(g_SD->CurUser>=0)?g_SD->Users.GetUserName(g_SD->CurUser):g_SD->OrgUser);
+  //SetUseSuRunGrp((DWORD)bUse);
+  if (bUse)
+    CreateSuRunnersGroup(); 
+  else
+    DeleteSuRunnersGroup();
+  DelAllUsrSettings;
+  g_SD->Users.SetSurunnersUsers(g_SD->OrgUser,g_SD->SessID,false);
+  UpdateUserList(g_SD->hTabCtrl[1],u);
+  EnableWindow(GetDlgItem(g_SD->hTabCtrl[1],IDC_ADDUSER),bUse);
+  EnableWindow(GetDlgItem(g_SD->hTabCtrl[1],IDC_DELUSER),bUse);
+  
+  EnableWindow(GetDlgItem(g_SD->hTabCtrl[3],IDC_NOCONVADMIN),bUse);
+  EnableWindow(GetDlgItem(g_SD->hTabCtrl[3],IDC_NOCONVUSER),bUse);
+  EnableWindow(GetDlgItem(g_SD->hTabCtrl[3],IDC_HIDESURUN),bUse);
+
+  EnableWindow(GetDlgItem(g_SD->hTabCtrl[3],IDC_ALLOWTIME),bUse);
+  EnableWindow(GetDlgItem(g_SD->hTabCtrl[3],IDC_SETENERGY),bUse);
+}
+
+void SetRecommendedSettings()
+{
+  HWND h=g_SD->hTabCtrl[0];
+  CheckDlgButton(h,IDC_BLURDESKTOP,1);
+  CheckDlgButton(h,IDC_FADEDESKTOP,1);
+  CheckDlgButton(h,IDC_ASKPW,0);
+  SetDlgItemInt(h,IDC_ASKTIMEOUT,0,0);
+  ComboBox_SetCurSel(GetDlgItem(h,IDC_WARNADMIN),APW_NR_SR_ADMIN);
+  CheckDlgButton(h,IDC_CTRLASADMIN,1);
+  CheckDlgButton(h,IDC_CMDASADMIN,0);
+  CheckDlgButton(h,IDC_EXPASADMIN,1);
+  CheckDlgButton(h,IDC_RESTARTADMIN,1);
+  CheckDlgButton(h,IDC_STARTADMIN,0);
+  EnableWindow(GetDlgItem(h,IDC_FADEDESKTOP),!IsWin2k());
+  EnableWindow(GetDlgItem(h,IDC_ASKTIMEOUT),0);
+  
+  h=g_SD->hTabCtrl[1]; 
+  EnableWindow(GetDlgItem(h,IDC_RUNSETUP),1);
+  EnableWindow(GetDlgItem(h,IDC_REQPW4SETUP),1);
+  EnableWindow(GetDlgItem(h,IDC_RESTRICTED),1);
+  EnableWindow(GetDlgItem(h,IDC_HIDESURUN),1);
+  EnableWindow(GetDlgItem(h,IDC_TRAYSHOWADMIN),1);
+  EnableWindow(GetDlgItem(h,IDC_TRAYBALLOON),!IsWin2k());
+  CheckDlgButton(h,IDC_RUNSETUP,1);
+  CheckDlgButton(h,IDC_REQPW4SETUP,0);
+  CheckDlgButton(h,IDC_RESTRICTED,0);
+  CheckDlgButton(h,IDC_HIDESURUN,0);
+  CheckDlgButton(h,IDC_TRAYSHOWADMIN,1);
+  CheckDlgButton(h,IDC_TRAYBALLOON,!IsWin2k());
+  //CheckDlgButton(h,IDC_NOUSESURUNNERS,0);
+  //SetUseSuRuners(TRUE);
+  
+  int User=g_SD->CurUser;
+  for (g_SD->CurUser=0;g_SD->CurUser<g_SD->Users.GetCount();g_SD->CurUser++)
+    SaveUserFlags();
+  g_SD->CurUser=User;
+
+  h=g_SD->hTabCtrl[2];
+  CheckDlgButton(h,IDC_SHEXHOOK,1);
+  CheckDlgButton(h,IDC_IATHOOK,1);
+  CheckDlgButton(h,IDC_REQADMIN,1);
+  CheckDlgButton(h,IDC_SHOWTRAY,1);
+  EnableWindow(GetDlgItem(h,IDC_REQADMIN),1);
+  EnableWindow(GetDlgItem(h,IDC_BLACKLIST),1);
+  EnableWindow(GetDlgItem(h,IDC_SHOWTRAY),1);
+  UpdateWhiteListFlags(GetDlgItem(g_SD->hTabCtrl[1],IDC_WHITELIST));
+  h=g_SD->hTabCtrl[3];
+//  CheckDlgButton(h,IDC_DORUNAS,0);
+//  CheckDlgButton(h,IDC_ALLOWTIME,0);
+//  CheckDlgButton(h,IDC_SETENERGY,1);
+//  CheckDlgButton(h,IDC_WINUPD4ALL,1);
+//  CheckDlgButton(h,IDC_WINUPDBOOT,1);
+//  CheckDlgButton(h,IDC_OWNERGROUP,1);
+  ComboBox_SetCurSel(GetDlgItem(h,IDC_TRAYSHOWADMIN),TSA_ADMIN);
+  CheckDlgButton(h,IDC_TRAYBALLOON,!IsWin2k());
+  EnableWindow(GetDlgItem(h,IDC_TRAYBALLOON),!IsWin2k());
+  CheckDlgButton(h,IDC_NOCONVADMIN,0);
+  CheckDlgButton(h,IDC_NOCONVUSER,0);
+  CheckDlgButton(h,IDC_HIDESURUN,0);
+}
+
+void ShowExpertSettings(HWND hwnd,bool bShow)
+{
+  HWND hTab=GetDlgItem(hwnd,IDC_SETUP_TAB);
+  int nSel=TabCtrl_GetCurSel(hTab);
+  TabCtrl_DeleteItem(hTab,3);
+  TabCtrl_DeleteItem(hTab,2);
+  if (!bShow)
+  {
+    //ShowWindow(GetDlgItem(g_SD->hTabCtrl[1],IDC_NOUSESURUNNERS),SW_HIDE);
+    if (nSel>1)
+    {
+      ShowWindow(g_SD->hTabCtrl[nSel],FALSE);
+      ShowWindow(g_SD->hTabCtrl[1],TRUE);
+      TabCtrl_SetCurSel(hTab,1);
+    }
+  }else
+  {
+    //ShowWindow(GetDlgItem(g_SD->hTabCtrl[1],IDC_NOUSESURUNNERS),SW_SHOW);
+    TCITEM tie3={TCIF_TEXT,0,0,CResStr(IDS_SETUP3),0,0,0};
+    TabCtrl_InsertItem(hTab,2,&tie3);
+    TCITEM tie4={TCIF_TEXT,0,0,CResStr(IDS_SETUP4),0,0,0};
+    TabCtrl_InsertItem(hTab,3,&tie4);
+  }
+  RedrawWindow(hwnd,0,0,RDW_INVALIDATE|RDW_ALLCHILDREN);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -744,21 +1498,9 @@ INT_PTR CALLBACK SetupDlg1Proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
       CheckDlgButton(hwnd,IDC_FADEDESKTOP,GetFadeDesk);
       EnableWindow(GetDlgItem(hwnd,IDC_FADEDESKTOP),(!IsWin2k())&&GetBlurDesk);
       
-      CheckDlgButton(hwnd,IDC_SAVEPW,GetSavePW);
-      EnableWindow(GetDlgItem(hwnd,IDC_ASKTIMEOUT),GetSavePW);
-      
-      HKEY kra=0;
-      HKEY ksu=0;
-      if (0==RegOpenKey(HKCR,L"exefile\\shell\\runas\\command",&kra))
-        RegCloseKey(kra);
-      if (0==RegOpenKey(HKCR,L"exefile\\shell\\RunAsSuRun\\command",&ksu))
-        RegCloseKey(ksu);
-      UINT bCheck=BST_INDETERMINATE;
-      if((kra!=0)&&(ksu==0))
-        bCheck=BST_UNCHECKED;
-      else if((kra==0)&&(ksu!=0))
-        bCheck=BST_CHECKED;
-      CheckDlgButton(hwnd,IDC_DORUNAS,bCheck);
+      BOOL bAsk=(!GetSavePW)||(GetPwTimeOut!=0);
+      CheckDlgButton(hwnd,IDC_ASKPW,bAsk);
+      EnableWindow(GetDlgItem(hwnd,IDC_ASKTIMEOUT),bAsk);
       
       HWND cb=GetDlgItem(hwnd,IDC_WARNADMIN);
       for (int i=0;i<5;i++)
@@ -771,12 +1513,8 @@ INT_PTR CALLBACK SetupDlg1Proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
       
       CheckDlgButton(hwnd,IDC_RESTARTADMIN,GetRestartAsAdmin);
       CheckDlgButton(hwnd,IDC_STARTADMIN,GetStartAsAdmin);
-      
-      CheckDlgButton(hwnd,IDC_ALLOWTIME,CanSetTime(SURUNNERSGROUP));
-      CheckDlgButton(hwnd,IDC_OWNERGROUP,IsOwnerAdminGrp);
-      CheckDlgButton(hwnd,IDC_WINUPD4ALL,IsWinUpd4All);
-      CheckDlgButton(hwnd,IDC_WINUPDBOOT,IsWinUpdBoot);
-      CheckDlgButton(hwnd,IDC_SETENERGY,CanSetEnergy);
+
+      CheckDlgButton(hwnd,IDC_NOEXPERT,!GetHideExpertSettings);
       return TRUE;
     }//WM_INITDIALOG
   case WM_CTLCOLORSTATIC:
@@ -790,11 +1528,38 @@ INT_PTR CALLBACK SetupDlg1Proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
       case MAKELPARAM(IDC_BLURDESKTOP,BN_CLICKED):
         EnableWindow(GetDlgItem(hwnd,IDC_FADEDESKTOP),(!IsWin2k())&& IsDlgButtonChecked(hwnd,IDC_BLURDESKTOP));
         return TRUE;
-      case MAKELPARAM(IDC_SAVEPW,BN_CLICKED):
-        EnableWindow(GetDlgItem(hwnd,IDC_ASKTIMEOUT),IsDlgButtonChecked(hwnd,IDC_SAVEPW));
+      case MAKELPARAM(IDC_ASKPW,BN_CLICKED):
+        EnableWindow(GetDlgItem(hwnd,IDC_ASKTIMEOUT),IsDlgButtonChecked(hwnd,IDC_ASKPW));
         return TRUE;
+      case MAKELPARAM(IDC_NOEXPERT,BN_CLICKED):
+        ShowExpertSettings(GetParent(hwnd),IsDlgButtonChecked(hwnd,IDC_NOEXPERT)!=0);
+        break;
+      case MAKELPARAM(IDC_SIMPLESETUP,BN_CLICKED):
+        if (SafeMsgBox(hwnd,CBigResStr(IDS_SIMPLESETUP),CResStr(IDS_APPNAME),
+          MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2)==IDYES)
+        {
+          SetRecommendedSettings();
+        }
+        break;
       case MAKELPARAM(ID_APPLY,BN_CLICKED):
         goto ApplyChanges;
+      case MAKELPARAM(IDC_IMPORT,BN_CLICKED):
+        if (ImportSettings(hwnd)==IDOK)
+        {
+          g_SD->DlgExitCode=-2;
+          PostMessage(GetParent(hwnd),WM_CLOSE,0,0);
+        }
+        return TRUE;
+      case MAKELPARAM(IDC_EXPORT,BN_CLICKED):
+        {
+          TCHAR f[4096]={0};
+          if (GetINIFile(hwnd,f))
+          {
+            DeleteFile(f);
+            ExportSettings(f);
+          }
+        }
+        return TRUE;
       }//switch (wParam)
       break;
     }//WM_COMMAND
@@ -804,8 +1569,13 @@ INT_PTR CALLBACK SetupDlg1Proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
 ApplyChanges:
       SetBlurDesk(IsDlgButtonChecked(hwnd,IDC_BLURDESKTOP));
       SetFadeDesk(IsDlgButtonChecked(hwnd,IDC_FADEDESKTOP));
-      SetSavePW(IsDlgButtonChecked(hwnd,IDC_SAVEPW));
-      SetPwTimeOut(GetDlgItemInt(hwnd,IDC_ASKTIMEOUT,0,1));
+      if(IsDlgButtonChecked(hwnd,IDC_ASKPW))
+      {
+        SetPwTimeOut(GetDlgItemInt(hwnd,IDC_ASKTIMEOUT,0,0));
+      }else
+        SetPwTimeOut(0);
+      DWORD bSave=(!IsDlgButtonChecked(hwnd,IDC_ASKPW))|| (GetPwTimeOut!=0);
+      SetSavePW(bSave);
       SetAdminNoPassWarn(ComboBox_GetCurSel(GetDlgItem(hwnd,IDC_WARNADMIN)));
       
       SetCtrlAsAdmin(IsDlgButtonChecked(hwnd,IDC_CTRLASADMIN));
@@ -815,23 +1585,7 @@ ApplyChanges:
       SetRestartAsAdmin(IsDlgButtonChecked(hwnd,IDC_RESTARTADMIN));
       SetStartAsAdmin(IsDlgButtonChecked(hwnd,IDC_STARTADMIN));
 
-      if ((CanSetTime(SURUNNERSGROUP)!=0)!=((int)IsDlgButtonChecked(hwnd,IDC_ALLOWTIME)))
-        AllowSetTime(SURUNNERSGROUP,IsDlgButtonChecked(hwnd,IDC_ALLOWTIME));
-      if (CanSetEnergy!=(int)IsDlgButtonChecked(hwnd,IDC_SETENERGY))
-        SetEnergy(IsDlgButtonChecked(hwnd,IDC_SETENERGY)!=0);
-      SetWinUpd4All(IsDlgButtonChecked(hwnd,IDC_WINUPD4ALL));
-      SetWinUpdBoot(IsDlgButtonChecked(hwnd,IDC_WINUPDBOOT));
-      SetOwnerAdminGrp(IsDlgButtonChecked(hwnd,IDC_OWNERGROUP));
-
-      switch (IsDlgButtonChecked(hwnd,IDC_DORUNAS))
-      {
-      case BST_CHECKED:
-        ReplaceRunAsWithSuRun();
-        break;
-      case BST_UNCHECKED:
-        ReplaceSuRunWithRunAs();
-        break;
-      }
+      SetHideExpertSettings(IsDlgButtonChecked(hwnd,IDC_NOEXPERT)==0);
       return TRUE;
     }//WM_DESTROY
   }
@@ -851,25 +1605,51 @@ INT_PTR CALLBACK SetupDlg2Proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
     {
       //Program list icons:
       HWND hWL=GetDlgItem(hwnd,IDC_WHITELIST);
+      SetWindowLong(hWL,GWL_STYLE,GetWindowLong(hWL,GWL_STYLE)|LVS_SHAREIMAGELISTS);
       SendMessage(hWL,LVM_SETEXTENDEDLISTVIEWSTYLE,0,
         LVS_EX_FULLROWSELECT|LVS_EX_SUBITEMIMAGES);
       ListView_SetImageList(hWL,g_SD->ImgList,LVSIL_SMALL);
-      for (int i=0;i<4;i++)
+      for (int i=0;i<3;i++)
       {
         LVCOLUMN col={LVCF_WIDTH,0,(i==0)?26:22,0,0,0,0,0};
         ListView_InsertColumn(hWL,i,&col);
       }
+      //CheckDlgButton(hwnd,IDC_NOUSESURUNNERS,GetUseSuRunGrp==0);
+      //ShowWindow(GetDlgItem(hwnd,IDC_NOUSESURUNNERS),SW_HIDE);
+      if (!GetUseSuRunGrp)
+      {
+        EnableWindow(GetDlgItem(hwnd,IDC_ADDUSER),false);
+        EnableWindow(GetDlgItem(hwnd,IDC_DELUSER),false);
+      }
       //UserList
-      UpdateUserList(hwnd);
+      UpdateUserList(hwnd,g_SD->OrgUser);
+      g_SD->Setup2Anchor.Init(hwnd);
+      g_SD->Setup2Anchor.Add(IDC_USER,ANCHOR_TOPLEFT|ANCHOR_RIGHT);
+      g_SD->Setup2Anchor.Add(IDC_ADDUSER,ANCHOR_TOPRIGHT);
+      g_SD->Setup2Anchor.Add(IDC_DELUSER,ANCHOR_TOPRIGHT);
+      g_SD->Setup2Anchor.Add(IDS_GRPDESC,ANCHOR_ALL);
+      g_SD->Setup2Anchor.Add(IDC_WHITELIST,ANCHOR_ALL);
+      //g_SD->Setup2Anchor.Add(IDC_NOUSESURUNNERS,ANCHOR_BOTTOMLEFT);
+      g_SD->Setup2Anchor.Add(IDC_IMEXSTATIC,ANCHOR_BOTTOMLEFT);
+      g_SD->Setup2Anchor.Add(IDC_IMPORT,ANCHOR_BOTTOMLEFT);
+      g_SD->Setup2Anchor.Add(IDC_EXPORT,ANCHOR_BOTTOMLEFT);
+      g_SD->Setup2Anchor.Add(IDC_ADDAPP,ANCHOR_BOTTOMRIGHT);
+      g_SD->Setup2Anchor.Add(IDC_EDITAPP,ANCHOR_BOTTOMRIGHT);
+      g_SD->Setup2Anchor.Add(IDC_DELETE,ANCHOR_BOTTOMRIGHT);
       return TRUE;
     }//WM_INITDIALOG
+  case WM_SIZE:
+    {
+      g_SD->Setup2Anchor.OnSize(false);
+      return TRUE;
+    }
   case WM_CTLCOLORSTATIC:
     SetBkMode((HDC)wParam,TRANSPARENT);
   case WM_CTLCOLORDLG:
     return (BOOL)PtrToUlong(GetStockObject(WHITE_BRUSH));
   case WM_PAINT:
     // The List Control is (to for some to me unknow reason) NOT displayed if
-    // a user app switches to the user desktop and CStayOnDesktop switches back.
+    // a user app switches to the user desktop and WatchDog switches back.
     RedrawWindow(GetDlgItem(hwnd,IDC_WHITELIST),0,0,RDW_ERASE|RDW_INVALIDATE|RDW_FRAME);
     break;
   case WM_TIMER:
@@ -893,27 +1673,41 @@ INT_PTR CALLBACK SetupDlg2Proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
       case MAKEWPARAM(IDC_USER,CBN_EDITCHANGE):
         UpdateUser(hwnd);
         return TRUE;
-      //Help Button
-      case MAKELPARAM(IDC_ICONHELP,BN_CLICKED):
-        if (g_SD->HelpWnd==0)
-          g_SD->HelpWnd=CreateDialog(GetModuleHandle(0),MAKEINTRESOURCE(IDD_ICONHELP),hwnd,HelpDlgProc);
-        if (g_SD->HelpWnd)
+      case MAKELPARAM(IDC_IMPORT,BN_CLICKED):
         {
-          ShowWindow(g_SD->HelpWnd,SW_SHOW);
-          EnableWindow(GetDlgItem(hwnd,IDC_ICONHELP),0);
+          TCHAR f[4096]={0};
+          LPCTSTR u=g_SD->Users.GetUserName(g_SD->CurUser);
+          if (OpenINIFile(hwnd,f)
+            && ImportUserWhiteList(f,u,_T("WhiteList"),_T("WhiteListFlags")))
+            UpdateUserList(hwnd,u);
         }
         return TRUE;
+      case MAKELPARAM(IDC_EXPORT,BN_CLICKED):
+        {
+          TCHAR f[4096]={0};
+          if (GetINIFile(hwnd,f))
+          {
+            DeleteFile(f);
+            ExportUserWhiteList(f,g_SD->Users.GetUserName(g_SD->CurUser),
+                                _T("WhiteList"),_T("WhiteListFlags"));
+          }
+        }
+        return TRUE;
+//      case MAKELPARAM(IDC_NOUSESURUNNERS,BN_CLICKED):
+//        SetUseSuRuners(IsDlgButtonChecked(hwnd,IDC_NOUSESURUNNERS)==0);
+//        return TRUE;
       //Edit Button
       case MAKELPARAM(IDC_EDITAPP,BN_CLICKED):
         {
 EditApp:
           HWND hWL=GetDlgItem(hwnd,IDC_WHITELIST);
-          int CurSel=(int)ListView_GetSelectionMark(hWL);
-          if (CurSel>=0)
+          int nSel=ListView_GetSelectionMark(hWL);
+          int cSel=ListView_GetSelectedCount(hWL);
+          if ((nSel>=0)&&(cSel==1))
           {
             TCHAR cmd[4096];
             TCHAR CMD[4096];
-            ListView_GetItemText(hWL,CurSel,3,cmd,4096);
+            ListView_GetItemText(hWL,nSel,2,cmd,4096);
             _tcscpy(CMD,cmd);
             LPTSTR u=g_SD->Users.GetUserName(g_SD->CurUser);
             DWORD f=GetWhiteListFlags(u,cmd,0);
@@ -923,9 +1717,9 @@ EditApp:
               {
                 if (AddToWhiteList(u,CMD,f))
                 {
-                  ListView_DeleteItem(hWL,CurSel);
+                  ListView_DeleteItem(hWL,nSel);
                   LVITEM item={LVIF_IMAGE,0,0,0,0,0,0,g_SD->ImgIconIdx[0],0,0};
-                  ListView_SetItemText(hWL,ListView_InsertItem(hWL,&item),3,CMD);
+                  ListView_SetItemText(hWL,ListView_InsertItem(hWL,&item),2,CMD);
                   ListView_SortItemsEx(hWL,ListSortProc,hWL);
                   UpdateWhiteListFlags(hWL);
                 }else
@@ -933,6 +1727,7 @@ EditApp:
               }else
                 MessageBeep(MB_ICONERROR);
             }
+            RedrawWindow(hwnd,0,0,RDW_INVALIDATE|RDW_ALLCHILDREN);
           }
         }
         return TRUE;
@@ -941,9 +1736,12 @@ EditApp:
         {
           zero(g_SD->NewUser);
           DialogBox(GetModuleHandle(0),MAKEINTRESOURCE(IDD_SELUSER),hwnd,SelUserDlgProc);
-          if (g_SD->NewUser[0] && BeOrBecomeSuRunner(g_SD->NewUser,FALSE,hwnd))
+          if (g_SD->NewUser[0] 
+            && (!IsInSuRunners(g_SD->NewUser,g_SD->SessID))
+            && BecomeSuRunner(g_SD->NewUser,g_SD->SessID,
+                        IsInAdmins(g_SD->NewUser,g_SD->SessID)!=0,FALSE,hwnd))
           {
-            g_SD->Users.SetGroupUsers(SURUNNERSGROUP,TRUE);
+            g_SD->Users.SetSurunnersUsers(g_SD->OrgUser,g_SD->SessID,TRUE);
             UpdateUserList(hwnd,g_SD->NewUser);
             zero(g_SD->NewUser);
           }
@@ -951,6 +1749,7 @@ EditApp:
         return TRUE;
       //Delete User Button
       case MAKELPARAM(IDC_DELUSER,BN_CLICKED):
+        if(GetUseSuRunGrp)
         {
           LPTSTR u=g_SD->Users.GetUserName(g_SD->CurUser);
           switch (SafeMsgBox(hwnd,CBigResStr(IDS_DELUSER,u),
@@ -962,8 +1761,8 @@ EditApp:
           case IDNO:
             AlterGroupMember(SURUNNERSGROUP,u,0);
             DelUsrSettings(u);
-            g_SD->Users.SetGroupUsers(SURUNNERSGROUP,TRUE);
-            UpdateUserList(hwnd);
+            g_SD->Users.SetSurunnersUsers(g_SD->OrgUser,g_SD->SessID,TRUE);
+            UpdateUserList(hwnd,g_SD->OrgUser);
             break;
           }
         }
@@ -979,7 +1778,7 @@ EditApp:
             {
               HWND hWL=GetDlgItem(hwnd,IDC_WHITELIST);
               LVITEM item={LVIF_IMAGE,0,0,0,0,0,0,g_SD->ImgIconIdx[0],0,0};
-              ListView_SetItemText(hWL,ListView_InsertItem(hWL,&item),3,cmd);
+              ListView_SetItemText(hWL,ListView_InsertItem(hWL,&item),2,cmd);
               ListView_SortItemsEx(hWL,ListSortProc,hWL);
               UpdateWhiteListFlags(hWL);
             }else
@@ -993,33 +1792,75 @@ EditApp:
       //Delete App Button
       case MAKELPARAM(IDC_DELETE,BN_CLICKED):
         {
-          HWND hWL=GetDlgItem(hwnd,IDC_WHITELIST);
-          int CurSel=(int)ListView_GetSelectionMark(hWL);
-          if (CurSel>=0)
+DelApp:   HWND hWL=GetDlgItem(hwnd,IDC_WHITELIST);
+          int cSel=ListView_GetSelectedCount(hWL);
+          if (cSel>0) for (int n=0;n<ListView_GetItemCount(hWL);)
           {
-            TCHAR cmd[4096];
-            ListView_GetItemText(hWL,CurSel,3,cmd,4096);
-            if(RemoveFromWhiteList(g_SD->Users.GetUserName(g_SD->CurUser),cmd))
+            if (ListView_GetItemState(hWL,n,LVIS_SELECTED))
             {
-              ListView_DeleteItem(hWL,CurSel);
-              CurSel=ListView_GetSelectionMark(hWL);
-              if (CurSel>=0)
-                ListView_SetItemState(hWL,CurSel,LVIS_SELECTED,0x0F);
+              TCHAR cmd[4096];
+              ListView_GetItemText(hWL,n,2,cmd,4096);
+              if(RemoveFromWhiteList(g_SD->Users.GetUserName(g_SD->CurUser),cmd))
+              {
+                ListView_DeleteItem(hWL,n);
+              }else
+                MessageBeep(MB_ICONERROR);
             }else
-              MessageBeep(MB_ICONERROR);
+              n++;
           }
-          EnableWindow(GetDlgItem(hwnd,IDC_DELETE),
-            ListView_GetSelectionMark(hWL)!=-1);
-          EnableWindow(GetDlgItem(hwnd,IDC_EDITAPP),
-            ListView_GetSelectionMark(hWL)!=-1);
+          int nSel=ListView_GetSelectionMark(hWL);
+          if (nSel>=0)
+            ListView_SetItemState(hWL,nSel,LVIS_SELECTED,0x0F);
+          EnableWindow(GetDlgItem(hwnd,IDC_DELETE),nSel>=0);
+          EnableWindow(GetDlgItem(hwnd,IDC_EDITAPP),nSel>=0);
         }
         return TRUE;
       case MAKELPARAM(ID_APPLY,BN_CLICKED):
         goto ApplyChanges;
+      case MAKELPARAM(IDC_RUNSETUP,BN_CLICKED):
+        EnableWindow(GetDlgItem(hwnd,IDC_REQPW4SETUP),IsDlgButtonChecked(hwnd,IDC_RUNSETUP));
+        return TRUE;
+      case MAKELPARAM(IDC_HIDESURUN,BN_CLICKED):
+        if(IsDlgButtonChecked(hwnd,IDC_HIDESURUN))
+        {
+          if (_tcscmp(g_SD->OrgUser,g_SD->Users.GetUserName(g_SD->CurUser))==0)
+          {
+            if (SafeMsgBox(hwnd,CBigResStr(IDS_HIDESELF),CResStr(IDS_APPNAME),
+              MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2)==IDNO)
+            {
+              CheckDlgButton(hwnd,IDC_HIDESURUN,0);
+              return TRUE;
+            }
+          }
+          EnableWindow(GetDlgItem(hwnd,IDC_TRAYSHOWADMIN),0);
+          EnableWindow(GetDlgItem(hwnd,IDC_TRAYBALLOON),0);
+          EnableWindow(GetDlgItem(hwnd,IDC_REQPW4SETUP),0);
+          EnableWindow(GetDlgItem(hwnd,IDC_RESTRICTED),0);
+          EnableWindow(GetDlgItem(hwnd,IDC_RUNSETUP),0);
+          CheckDlgButton(hwnd,IDC_TRAYBALLOON,BST_UNCHECKED);
+          CheckDlgButton(hwnd,IDC_TRAYSHOWADMIN,BST_UNCHECKED);
+          CheckDlgButton(hwnd,IDC_RUNSETUP,BST_UNCHECKED);
+          CheckDlgButton(hwnd,IDC_REQPW4SETUP,BST_UNCHECKED);
+          CheckDlgButton(hwnd,IDC_RESTRICTED,BST_CHECKED);
+          CheckDlgButton(hwnd,IDC_RUNSETUP,BST_UNCHECKED);
+        }else
+        {
+          EnableWindow(GetDlgItem(hwnd,IDC_TRAYSHOWADMIN),1);
+          BOOL bBal=(!IsWin2k())&&(IsDlgButtonChecked(hwnd,IDC_TRAYSHOWADMIN));
+          EnableWindow(GetDlgItem(hwnd,IDC_TRAYBALLOON),bBal);
+          EnableWindow(GetDlgItem(hwnd,IDC_RUNSETUP),1);
+          EnableWindow(GetDlgItem(hwnd,IDC_RESTRICTED),1);
+        }
+        UpdateWhiteListFlags(GetDlgItem(hwnd,IDC_WHITELIST));
+        return TRUE;
       case MAKELPARAM(IDC_TRAYSHOWADMIN,BN_CLICKED):
         if (!IsWin2k())
-          EnableWindow(GetDlgItem(hwnd,IDC_TRAYBALLOON),
-            IsDlgButtonChecked(hwnd,IDC_TRAYSHOWADMIN)==BST_CHECKED);
+        {
+          BOOL bTSA=IsDlgButtonChecked(hwnd,IDC_TRAYSHOWADMIN)==BST_CHECKED;
+          EnableWindow(GetDlgItem(hwnd,IDC_TRAYBALLOON),bTSA);
+          if(!bTSA)
+            CheckDlgButton(hwnd,IDC_TRAYBALLOON,BST_UNCHECKED);
+        }
         return TRUE;
       }//switch (wParam)
       break;
@@ -1034,14 +1875,37 @@ EditApp:
         {
         //Selection changed
         case LVN_ITEMCHANGED:
-          EnableWindow(GetDlgItem(hwnd,IDC_DELETE),
-            ListView_GetSelectionMark(GetDlgItem(hwnd,IDC_WHITELIST))!=-1);
-          EnableWindow(GetDlgItem(hwnd,IDC_EDITAPP),
-            ListView_GetSelectionMark(GetDlgItem(hwnd,IDC_WHITELIST))!=-1);
+          {
+            HWND hWL=GetDlgItem(hwnd,IDC_WHITELIST);
+            int cSel=ListView_GetSelectedCount(hWL);
+            EnableWindow(GetDlgItem(hwnd,IDC_DELETE),cSel>=1);
+            EnableWindow(GetDlgItem(hwnd,IDC_EDITAPP),cSel==1);
+          }
           return TRUE;
+        case LVN_KEYDOWN:
+          switch (((LPNMLVKEYDOWN)lParam)->wVKey)
+          {
+          case VK_F2:
+            goto EditApp;
+          case VK_DELETE:
+            goto DelApp;
+          case (WORD)'A':
+            if (GetKeyState(VK_CONTROL)&0x8000)
+            {
+              HWND hWL=GetDlgItem(hwnd,IDC_WHITELIST);
+              if(ListView_GetItemCount(hWL))
+              {
+                for (int n=0;n<ListView_GetItemCount(hWL);n++)
+                  ListView_SetItemState(hWL,n,LVIS_SELECTED,0x0F);
+                ListView_SetItemState(hWL,0,LVIS_SELECTED|LVIS_FOCUSED,LVIS_SELECTED|LVIS_FOCUSED);
+              }
+              return TRUE;
+            }
+          }
+          break;
         //Mouse Click: Toggle Flags
         case NM_DBLCLK:
-          if(((LPNMITEMACTIVATE)lParam)->iSubItem>2)
+          if(((LPNMITEMACTIVATE)lParam)->iSubItem>1)
             goto EditApp;
         case NM_CLICK:
           {
@@ -1051,13 +1915,12 @@ EditApp:
             {
             case 0:Flag=FLAG_DONTASK;     break;
             case 1:Flag=FLAG_SHELLEXEC;   break;
-            case 2:Flag=FLAG_NORESTRICT;  break;
             }
             if (Flag)
             {
               TCHAR cmd[4096];
               HWND hWL=GetDlgItem(hwnd,IDC_WHITELIST);
-              ListView_GetItemText(hWL,p->iItem,3,cmd,4096);
+              ListView_GetItemText(hWL,p->iItem,2,cmd,4096);
               if(ToggleWhiteListFlag(g_SD->Users.GetUserName(g_SD->CurUser),cmd,Flag))
                 UpdateWhiteListFlags(hWL);
               else
@@ -1073,7 +1936,7 @@ EditApp:
     if (g_SD->HelpWnd)
       DestroyWindow(g_SD->HelpWnd);
     g_SD->HelpWnd=0;
-    //if (g_SD->DlgExitCode==IDOK)
+    if (g_SD->DlgExitCode!=-2)
     {
 ApplyChanges:
       SaveUserFlags();
@@ -1082,6 +1945,7 @@ ApplyChanges:
   }
   return FALSE;
 }
+
 
 //////////////////////////////////////////////////////////////////////////////
 // 
@@ -1097,23 +1961,11 @@ INT_PTR CALLBACK SetupDlg3Proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
       CheckDlgButton(hwnd,IDC_SHEXHOOK,GetUseIShExHook);
       CheckDlgButton(hwnd,IDC_IATHOOK,GetUseIATHook);
       CheckDlgButton(hwnd,IDC_SHOWTRAY,GetShowAutoRuns);
-      CheckDlgButton(hwnd,IDC_NOCONVADMIN,GetNoConvAdmin);
-      CheckDlgButton(hwnd,IDC_NOCONVUSER,GetNoConvUser);
-      CheckDlgButton(hwnd,IDC_RESTRICTNEW,GetRestrictNew);
-      CheckDlgButton(hwnd,IDC_NOSETUPNEW,GetNoSetupNew);
-
-      HWND cb=GetDlgItem(hwnd,IDC_TRAYSHOWADMIN);
-      DWORD tsa=GetShowTrayAdmin;
-      ComboBox_InsertString(cb,0,CResStr(IDS_WARNADMIN5));//No users
-      ComboBox_InsertString(cb,1,CResStr(IDS_WARNADMIN)); //"All users"
-      ComboBox_InsertString(cb,2,CResStr(IDS_WARNADMIN4));//"Administrators"
-      ComboBox_SetCurSel(cb,tsa & (~TSA_TIPS));
-      CheckDlgButton(hwnd,IDC_TRAYBALLOON,(tsa&TSA_TIPS)!=0);
-      if (IsWin2k())
-        //Win2k:no balloon tips
-        EnableWindow(GetDlgItem(hwnd,IDC_TRAYBALLOON),0);
-      else
-        EnableWindow(GetDlgItem(hwnd,IDC_TRAYBALLOON),(tsa&(~TSA_TIPS))!=0);
+      CheckDlgButton(hwnd,IDC_REQADMIN,GetTestReqAdmin);
+      BOOL bHook=GetUseIShExHook || GetUseIATHook;
+      EnableWindow(GetDlgItem(hwnd,IDC_REQADMIN),bHook);
+      EnableWindow(GetDlgItem(hwnd,IDC_BLACKLIST),bHook);
+      EnableWindow(GetDlgItem(hwnd,IDC_SHOWTRAY),bHook);
       return TRUE;
     }//WM_INITDIALOG
   case WM_CTLCOLORSTATIC:
@@ -1127,11 +1979,122 @@ ApplyChanges:
       SetUseIShExHook(IsDlgButtonChecked(hwnd,IDC_SHEXHOOK));
       SetUseIATHook(IsDlgButtonChecked(hwnd,IDC_IATHOOK));
       SetShowAutoRuns(IsDlgButtonChecked(hwnd,IDC_SHOWTRAY));
+      return TRUE;
+    }//WM_DESTROY
+  case WM_COMMAND:
+    {
+      switch (wParam)
+      {
+      case MAKELPARAM(IDC_IATHOOK,BN_CLICKED):
+      case MAKELPARAM(IDC_SHEXHOOK,BN_CLICKED):
+        {
+          UpdateWhiteListFlags(GetDlgItem(g_SD->hTabCtrl[1],IDC_WHITELIST));
+          BOOL bHook=IsDlgButtonChecked(hwnd,IDC_SHEXHOOK)
+                   ||IsDlgButtonChecked(hwnd,IDC_IATHOOK);
+          EnableWindow(GetDlgItem(hwnd,IDC_REQADMIN),bHook);
+          EnableWindow(GetDlgItem(hwnd,IDC_BLACKLIST),bHook);
+          EnableWindow(GetDlgItem(hwnd,IDC_SHOWTRAY),bHook);
+        }
+        return TRUE;
+      case MAKELPARAM(IDC_BLACKLIST,BN_CLICKED):
+        DialogBox(GetModuleHandle(0),MAKEINTRESOURCE(IDD_BLKLST),hwnd,BlkLstDlgProc);
+        return TRUE;
+      case MAKELPARAM(ID_APPLY,BN_CLICKED):
+        goto ApplyChanges;
+      }
+    }
+  }
+  return FALSE;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// 
+// Dialog Proc for fourth Tab-Control
+// 
+//////////////////////////////////////////////////////////////////////////////
+INT_PTR CALLBACK SetupDlg4Proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
+{
+  switch(msg)
+  {
+  case WM_INITDIALOG:
+    {
+      HKEY kra=0;
+      if (0==RegOpenKeyEx(HKCR,L"exefile\\shell\\runas\\command",0,KSAM(KEY_READ),&kra))
+        RegCloseKey(kra);
+      if ((!kra)
+        &&(0==RegOpenKeyEx(HKCR,L"cplfile\\shell\\runas\\command",0,KSAM(KEY_READ),&kra)))
+        RegCloseKey(kra);
+      CheckDlgButton(hwnd,IDC_DORUNAS,(kra?BST_UNCHECKED:BST_CHECKED));
+      if(GetUseSuRunGrp)
+      {
+        CheckDlgButton(hwnd,IDC_ALLOWTIME,GetSetTime(SURUNNERSGROUP));
+        CheckDlgButton(hwnd,IDC_SETENERGY,GetSetEnergy);
+      }
+      else
+      {
+        EnableWindow(GetDlgItem(hwnd,IDC_ALLOWTIME),false);
+        EnableWindow(GetDlgItem(hwnd,IDC_SETENERGY),false);
+      }
+      CheckDlgButton(hwnd,IDC_OWNERGROUP,GetOwnerAdminGrp);
+      CheckDlgButton(hwnd,IDC_WINUPD4ALL,GetWinUpd4All);
+      CheckDlgButton(hwnd,IDC_WINUPDBOOT,GetWinUpdBoot);
+
+      HWND cb=GetDlgItem(hwnd,IDC_TRAYSHOWADMIN);
+      DWORD tsa=GetShowTrayAdmin;
+      ComboBox_InsertString(cb,0,CResStr(IDS_WARNADMIN5));//No users
+      ComboBox_InsertString(cb,1,CResStr(IDS_WARNADMIN)); //"All users"
+      ComboBox_InsertString(cb,2,CResStr(IDS_WARNADMIN4));//"Administrators"
+      ComboBox_SetCurSel(cb,tsa & (~TSA_TIPS));
+      CheckDlgButton(hwnd,IDC_TRAYBALLOON,(tsa&TSA_TIPS)!=0);
+      if (IsWin2k())
+        //Win2k:no balloon tips
+        EnableWindow(GetDlgItem(hwnd,IDC_TRAYBALLOON),0);
+      else
+        EnableWindow(GetDlgItem(hwnd,IDC_TRAYBALLOON),(tsa&(~TSA_TIPS))!=0);
+      CheckDlgButton(hwnd,IDC_NOCONVADMIN,GetNoConvAdmin);
+      CheckDlgButton(hwnd,IDC_NOCONVUSER,GetNoConvUser);
+      CheckDlgButton(hwnd,IDC_HIDESURUN,GetDefHideSuRun);
+
+      bool bUse=GetUseSuRunGrp;
+      EnableWindow(GetDlgItem(hwnd,IDC_NOCONVADMIN),bUse);
+      EnableWindow(GetDlgItem(hwnd,IDC_NOCONVUSER),bUse);
+      EnableWindow(GetDlgItem(hwnd,IDC_HIDESURUN),bUse);
+      EnableWindow(GetDlgItem(hwnd,IDC_ALLOWTIME),bUse);
+      EnableWindow(GetDlgItem(hwnd,IDC_SETENERGY),bUse);
+
+      return TRUE;
+    }//WM_INITDIALOG
+  case WM_CTLCOLORSTATIC:
+    SetBkMode((HDC)wParam,TRANSPARENT);
+  case WM_CTLCOLORDLG:
+    return (BOOL)PtrToUlong(GetStockObject(WHITE_BRUSH));
+  case WM_DESTROY:
+    if (g_SD->DlgExitCode==IDOK) //User pressed OK, save settings
+    {
+ApplyChanges:
+      switch (IsDlgButtonChecked(hwnd,IDC_DORUNAS))
+      {
+      case BST_CHECKED:
+        ReplaceRunAsWithSuRun();
+        break;
+      case BST_UNCHECKED:
+        ReplaceSuRunWithRunAs();
+        break;
+      }
+      if(GetUseSuRunGrp)
+      {
+        if ((GetSetTime(SURUNNERSGROUP)!=0)!=((int)IsDlgButtonChecked(hwnd,IDC_ALLOWTIME)))
+          SetSetTime(SURUNNERSGROUP,IsDlgButtonChecked(hwnd,IDC_ALLOWTIME));
+        if (GetSetEnergy!=(int)IsDlgButtonChecked(hwnd,IDC_SETENERGY))
+          SetSetEnergy(IsDlgButtonChecked(hwnd,IDC_SETENERGY)!=0);
+      }
+      SetWinUpd4All(IsDlgButtonChecked(hwnd,IDC_WINUPD4ALL));
+      SetWinUpdBoot(IsDlgButtonChecked(hwnd,IDC_WINUPDBOOT));
+      SetOwnerAdminGrp(IsDlgButtonChecked(hwnd,IDC_OWNERGROUP));
+
       SetNoConvAdmin(IsDlgButtonChecked(hwnd,IDC_NOCONVADMIN));
       SetNoConvUser(IsDlgButtonChecked(hwnd,IDC_NOCONVUSER));
-      SetRestrictNew(IsDlgButtonChecked(hwnd,IDC_RESTRICTNEW));
-      SetNoSetupNew(IsDlgButtonChecked(hwnd,IDC_NOSETUPNEW));
-
+      SetDefHideSuRun(IsDlgButtonChecked(hwnd,IDC_HIDESURUN));
       DWORD tsa=ComboBox_GetCurSel(GetDlgItem(hwnd,IDC_TRAYSHOWADMIN));
       if (IsDlgButtonChecked(hwnd,IDC_TRAYBALLOON))
         tsa|=TSA_TIPS;
@@ -1144,12 +2107,12 @@ ApplyChanges:
       {
       case MAKELPARAM(IDC_TRAYSHOWADMIN,CBN_SELCHANGE):
         if (!IsWin2k())
-          EnableWindow(GetDlgItem(hwnd,IDC_TRAYBALLOON),
-            ComboBox_GetCurSel(GetDlgItem(hwnd,IDC_TRAYSHOWADMIN))>0);
-        return TRUE;
-      case MAKELPARAM(IDC_IATHOOK,BN_CLICKED):
-      case MAKELPARAM(IDC_SHEXHOOK,BN_CLICKED):
-        UpdateWhiteListFlags(GetDlgItem(g_SD->hTabCtrl[1],IDC_WHITELIST));
+        {
+          BOOL bTSA=ComboBox_GetCurSel(GetDlgItem(hwnd,IDC_TRAYSHOWADMIN))>0;
+          EnableWindow(GetDlgItem(hwnd,IDC_TRAYBALLOON),bTSA);
+          if(!bTSA)
+            CheckDlgButton(hwnd,IDC_TRAYBALLOON,BST_UNCHECKED);
+        }
         return TRUE;
       case MAKELPARAM(ID_APPLY,BN_CLICKED):
         goto ApplyChanges;
@@ -1170,11 +2133,6 @@ INT_PTR CALLBACK MainSetupDlgProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam
   {
   case WM_INITDIALOG:
     {
-      if (g_WatchDogEvent)
-      {
-        SetEvent(g_WatchDogEvent);
-        SetTimer(hwnd,1265142,500,0);
-      }
       SendMessage(hwnd,WM_SETICON,ICON_BIG,
         (LPARAM)LoadImage(GetModuleHandle(0),MAKEINTRESOURCE(IDI_MAINICON),
         IMAGE_ICON,32,32,0));
@@ -1189,10 +2147,11 @@ INT_PTR CALLBACK MainSetupDlgProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam
       }
       //Tab Control
       HWND hTab=GetDlgItem(hwnd,IDC_SETUP_TAB);
-      int TabNames[nTabs]= {IDS_SETUP1,IDS_SETUP2,IDS_SETUP3};
-      int TabIDs[nTabs]= { IDD_SETUP1,IDD_SETUP2,IDD_SETUP3};
-      DLGPROC TabProcs[nTabs]= { SetupDlg1Proc,SetupDlg2Proc,SetupDlg3Proc};
-      for (int i=0;i<nTabs;i++)
+      int TabNames[nTabs]= {IDS_SETUP1,IDS_SETUP2,IDS_SETUP3,IDS_SETUP4};
+      int TabIDs[nTabs]= { IDD_SETUP1,IDD_SETUP2,IDD_SETUP3,IDD_SETUP4};
+      DLGPROC TabProcs[nTabs]= {SetupDlg1Proc,SetupDlg2Proc,SetupDlg3Proc,SetupDlg4Proc};
+      int i;
+      for (i=0;i<nTabs;i++)
       {
         TCITEM tie={TCIF_TEXT,0,0,CResStr(TabNames[i]),0,0,0};
 		    TabCtrl_InsertItem(hTab,i,&tie);
@@ -1205,14 +2164,61 @@ INT_PTR CALLBACK MainSetupDlgProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam
         ScreenToClient(hwnd,(POINT*)&r.right);
 	      SetWindowPos(g_SD->hTabCtrl[i],hTab,r.left,r.top,r.right-r.left,r.bottom-r.top,0);
       }
+      TabCtrl_SetCurSel(hTab,0);
       ShowWindow(g_SD->hTabCtrl[0],TRUE);
       //...
       UpdateWhiteListFlags(GetDlgItem(g_SD->hTabCtrl[1],IDC_WHITELIST));
+      //...
+      if (GetHideExpertSettings)
+        ShowExpertSettings(hwnd,false);
       SetFocus(hTab);
+      g_SD->MainSetupAnchor.Init(hwnd);
+      g_SD->MainSetupAnchor.Add(IDC_SETUP_TAB,ANCHOR_ALL);
+      for (i=0;i<nTabs;i++)
+        g_SD->MainSetupAnchor.Add(g_SD->hTabCtrl[i],ANCHOR_ALL);
+      g_SD->MainSetupAnchor.Add(ID_APPLY,ANCHOR_BOTTOMRIGHT);
+      g_SD->MainSetupAnchor.Add(IDOK,ANCHOR_BOTTOMRIGHT);
+      g_SD->MainSetupAnchor.Add(IDCANCEL,ANCHOR_BOTTOMRIGHT);
+      RECT r;
+      GetWindowRect(hwnd,&r);
+      g_SD->MinW=r.right-r.left;
+      g_SD->MinH=r.bottom-r.top;
+      int w=GetRegInt(HKLM,SURUNKEY,L"SetupW",g_SD->MinW);
+      int h=GetRegInt(HKLM,SURUNKEY,L"SetupH",g_SD->MinH);
+      int x=r.left-(w-g_SD->MinW)/2;
+      int y=r.top-(h-g_SD->MinH)/2;
+      MoveWindow(hwnd,x,y,w,h,false);
+      PostMessage(hwnd,WM_SIZE,0,0);
       return FALSE;
     }//WM_INITDIALOG
+  case WM_CLOSE:
+    {
+      if (g_SD->DlgExitCode==-2)
+      {
+        EndDialog(hwnd,-2);
+        return TRUE;
+      }
+      break;
+    }
+  case WM_SIZE:
+    {
+      g_SD->MainSetupAnchor.OnSize(false);
+      RedrawWindow(hwnd,0,0,RDW_INVALIDATE|RDW_ALLCHILDREN);
+      return TRUE;
+    }
+  case WM_GETMINMAXINFO:
+    {
+      MINMAXINFO* lpMMI=(MINMAXINFO*)lParam;
+      lpMMI->ptMinTrackSize.x=g_SD->MinW;
+      lpMMI->ptMinTrackSize.y=g_SD->MinH;
+      return TRUE;
+    }
   case WM_NCDESTROY:
     {
+      RECT r;
+      GetWindowRect(hwnd,&r);
+      SetRegInt(HKLM,SURUNKEY,L"SetupW",r.right-r.left);
+      SetRegInt(HKLM,SURUNKEY,L"SetupH",r.bottom-r.top);
       for (int i=0;i<nTabs;i++)
         DestroyWindow(g_SD->hTabCtrl[i]);
       DestroyIcon((HICON)SendMessage(hwnd,WM_GETICON,ICON_BIG,0));
@@ -1236,9 +2242,6 @@ INT_PTR CALLBACK MainSetupDlgProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam
       }
       break;
     }//WM_NOTIFY
-  case WM_TIMER:
-    if ((wParam==1265142)&& g_WatchDogEvent)
-      SetEvent(g_WatchDogEvent);
   case WM_COMMAND:
     {
       switch (wParam)
@@ -1247,10 +2250,7 @@ INT_PTR CALLBACK MainSetupDlgProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam
         SendMessage(
           g_SD->hTabCtrl[TabCtrl_GetCurSel(GetDlgItem(hwnd,IDC_SETUP_TAB))],
           WM_COMMAND,wParam,lParam);
-#ifdef _DEBUG 
-        Sleep(5000); //Show Watchdog!
-#endif _DEBUG 
-        break;
+        return TRUE;
       case MAKELPARAM(IDCANCEL,BN_CLICKED):
         g_SD->DlgExitCode=IDCANCEL;
         EndDialog(hwnd,0);
@@ -1266,14 +2266,18 @@ INT_PTR CALLBACK MainSetupDlgProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam
   return FALSE;
 }
 
-BOOL RunSetup()
+BOOL RunSetup(DWORD SessionID,LPCTSTR User)
 {
-  SETUPDATA sd;
-  g_SD=&sd;
-  BOOL bRet=DialogBox(GetModuleHandle(0),MAKEINTRESOURCE(IDD_SETUP_MAIN),
-                           0,MainSetupDlgProc)>=0;  
-  g_SD=0;
-  return bRet;
+  INT_PTR bRet=-2;
+  while (bRet==-2)
+  {
+    SETUPDATA sd(SessionID,User);
+    g_SD=&sd;
+    bRet=DialogBox(GetModuleHandle(0),MAKEINTRESOURCE(IDD_SETUP_MAIN),
+      0,MainSetupDlgProc);  
+    g_SD=0;
+  }
+  return bRet==IDOK;
 }
 
 #ifdef _DEBUGSETUP
@@ -1281,23 +2285,26 @@ BOOL RunSetup()
 #include "WinStaDesk.h"
 BOOL TestSetup()
 {
-  INITCOMMONCONTROLSEX icce={sizeof(icce),ICC_USEREX_CLASSES|ICC_WIN95_CLASSES};
+  LoadLibrary(TEXT("Shell32.dll"));
+  INITCOMMONCONTROLSEX icce={sizeof(icce),0xFFFF};
+  TCHAR un[2*MAX_PATH+1];
+  GetProcessUserName(GetCurrentProcessId(),un);
   InitCommonControlsEx(&icce);
+
   SetThreadLocale(MAKELCID(MAKELANGID(LANG_GERMAN,SUBLANG_GERMAN),SORT_DEFAULT));
-  if (!RunSetup())
+  if (!RunSetup(0,un))
     DBGTrace1("DialogBox failed: %s",GetLastErrorNameStatic());
   
   SetThreadLocale(MAKELCID(MAKELANGID(LANG_ENGLISH,SUBLANG_ENGLISH_US),SORT_DEFAULT));
-  if (!RunSetup())
+  if (!RunSetup(0,un))
     DBGTrace1("DialogBox failed: %s",GetLastErrorNameStatic());
   
-  SetThreadLocale(MAKELCID(MAKELANGID(LANG_POLISH,0),SORT_DEFAULT));
-  if (!RunSetup())
+  SetThreadLocale(MAKELCID(MAKELANGID(LANG_DUTCH,SUBLANG_DUTCH),SORT_DEFAULT));
+  if (!RunSetup(0,un))
     DBGTrace1("DialogBox failed: %s",GetLastErrorNameStatic());
   ::ExitProcess(0);
   return TRUE;
 }
 
-BOOL x=TestSetup();
 #endif _DEBUGSETUP
 

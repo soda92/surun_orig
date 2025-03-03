@@ -30,7 +30,9 @@
 #define IDS_STARTMENUDIR                25
 #define IDS_SURUNSTUCK                  26
 #define IDS_SWITCHBACK                  27
+#define IDS_APPOK                       28
 #define IDS_GRPDESC                     29
+#define IDS_ADDTOBLKLIST                30
 #define IDS_DOMAINGROUPS                31
 #define IDS_ADDFILETOLIST               31
 #define IDS_DOMAINGROUPS2               32
@@ -39,12 +41,13 @@
 #define IDS_NOADD2USERS                 34
 #define IDS_NOREMADMINS                 35
 #define IDS_ADMINSHELL                  36
-#define IDS_NOSECLOGON                  37
+#define IDS_SIMPLESETUP                 37
 #define IDS_NOADMIN2                    38
 #define IDS_RUNRESTRICTED               39
 #define IDS_SETUP1                      40
 #define IDS_SETUP2                      41
 #define IDS_SETUP3                      42
+#define IDS_SETUP4                      43
 #define IDS_ASKAUTO                     44
 #define IDS_STARTED                     47
 #define IDS_ASKSURUNNER1                48
@@ -67,7 +70,7 @@
 #define IDS_SR2ADMIN                    66
 #define IDS_DELSURUNNERS                67
 #define IDS_INSTFAILED                  68
-#define IDC_CLOSE                       69
+#define IDS_CLOSE                       69
 #define IDS_INSTSUCCESS                 70
 #define IDS_INSTSUCCESS2                71
 #define IDC_LOGOFF                      72
@@ -92,6 +95,10 @@
 #define IDS_SHNAME7                     91
 #define IDS_SHNAME8                     92
 #define IDS_BEAUTIFIED                  93
+#define IDS_PW4SETUP                    94
+#define IDS_REBOOT                      95
+#define IDS_INSTSUCCESS3                96
+#define IDS_HIDESELF                    97
 #define IDI_MAINICON                    100
 #define IDD_LOGONDLG                    101
 #define IDD_DIALOG1                     104
@@ -121,7 +128,10 @@
 #define IDD_APPOPTIONS                  126
 #define IDI_ADMIN1                      127
 #define IDI_SHADMIN                     127
+#define IDD_BLKLST                      127
 #define IDI_SRADMIN                     129
+#define IDD_ADDTOBLKLST                 135
+#define IDD_IMPORTSETTINGS              137
 #define IDI_LISTICON                    200
 #define IDI_LISTICON1                   201
 #define IDI_LISTICON2                   202
@@ -179,6 +189,7 @@
 #define IDC_ADDAPP                      1034
 #define IDC_SELFILE                     1034
 #define IDC_EDITAPP                     1035
+#define IDC_EXTOPT3                     1035
 #define IDC_CTRLASADMIN                 1036
 #define IDC_ADDUSER                     1036
 #define IDC_CMDASADMIN                  1037
@@ -187,7 +198,6 @@
 #define IDC_STARTADMIN                  1040
 #define IDC_RUNSETUP                    1041
 #define IDC_RESTRICTED                  1042
-#define IDC_EDIT1                       1045
 #define IDC_FILENAME                    1045
 #define IDC_USERLIST                    1046
 #define IDC_USERNAME                    1047
@@ -204,21 +214,41 @@
 #define IDC_QUESTION                    1057
 #define IDC_SR2ADMIN                    1058
 #define IDC_INSTLOG                     1059
+#define IDC_IMPORT                      1060
+#define IDC_EXPORT                      1061
 #define IDC_OWNGRPST                    1070
 #define IDC_OPTNST                      1071
 #define IDC_TRAYSHOWADMIN               1072
+#define IDC_OWNGRPST2                   1072
+#define IDC_KEEPREGST                   1072
 #define IDC_TRAYBALLOON                 1073
 #define IDC_STOREPASS                   1074
 #define IDC_WARNADMIN                   1075
+#define IDC_AUTOCANCEL                  1077
+#define IDC_HIDESURUN                   1078
+#define IDC_REQPW4SETUP                 1079
+#define IDC_SIMPLESETUP                 1080
+#define IDC_ASKPW                       1081
+#define IDC_REQADMIN                    1084
+#define IDC_BLACKLIST                   1085
+#define IDC_NOEXPERT                    1087
+#define IDC_EXPSURUNSETTINGS            1088
+#define IDC_EXPBLACKLIST                1089
+#define IDC_EXPUSRSETTINGS              1090
+#define IDC_IMPSURUNSETTINGS            1091
+#define IDC_IMPBLACKLIST                1092
+#define IDC_IMPUSRSETTINGS              1093
+#define IDC_NOUSESURUNNERS              1094
+#define IDC_IMEXSTATIC                  1095
 #define IDC_STATIC                      -1
 
 // Next default values for new objects
 // 
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
-#define _APS_NEXT_RESOURCE_VALUE        135
+#define _APS_NEXT_RESOURCE_VALUE        136
 #define _APS_NEXT_COMMAND_VALUE         40001
-#define _APS_NEXT_CONTROL_VALUE         1077
+#define _APS_NEXT_CONTROL_VALUE         1099
 #define _APS_NEXT_SYMED_VALUE           102
 #endif
 #endif

@@ -144,6 +144,7 @@ typedef struct _LOGONDLGPARAMS
   BOOL ForceAdminLogon;
   USERLIST Users;
   int TimeOut;
+  int MaxTimeOut;
   DWORD UsrFlags;
   BOOL bRunAs;
   _LOGONDLGPARAMS(LPCTSTR M,LPTSTR Usr,LPTSTR Pwd,BOOL RO,BOOL Adm,DWORD UFlags)
@@ -153,7 +154,8 @@ typedef struct _LOGONDLGPARAMS
     Password=Pwd;
     UserReadonly=RO;
     ForceAdminLogon=Adm;
-    TimeOut=40;//s
+    MaxTimeOut=40;//s
+    TimeOut=MaxTimeOut;
     UsrFlags=UFlags;
     bRunAs=FALSE;
   }
@@ -224,17 +226,18 @@ SIZE CliSize(HWND w)
 int NX_Ctrls[]={IDC_SECICON,IDC_SECICON1,IDC_USERBITMAP,IDC_USRST,IDC_PWDST};
 //These controls are stretched on X-Resize
 int SX_Ctrls[]={IDC_WHTBK,IDC_HINTBK,IDC_FRAME1,IDC_FRAME2,IDC_DLGQUESTION,
-                IDC_USER,IDC_PASSWORD,IDC_HINT,IDC_HINT2,IDC_ALWAYSOK,IDC_SHELLEXECOK};
+                IDC_USER,IDC_PASSWORD,IDC_HINT,IDC_HINT2,IDC_ALWAYSOK,
+                IDC_SHELLEXECOK,IDC_AUTOCANCEL};
 //These controls are moved on X-Resize
-int MX_Ctrls[]={IDCANCEL,IDOK};
+int MX_Ctrls[]={IDCANCEL,IDOK,IDC_STOREPASS};
 //These controls are not changed on Y-Resize
 int NY_Ctrls[]={IDC_SECICON};
 //These controls are stretched on Y-Resize
 int SY_Ctrls[]={IDC_WHTBK,IDC_DLGQUESTION};
 //These controls are moved on Y-Resize
 int MY_Ctrls[]={IDC_SECICON1,IDC_USERBITMAP,IDC_HINTBK,IDC_FRAME1,IDC_FRAME2,
-                IDC_USER,IDC_PASSWORD,IDC_HINT,IDC_HINT2,IDCANCEL,IDOK,
-                IDC_USRST,IDC_PWDST,IDC_ALWAYSOK,IDC_SHELLEXECOK};
+                IDC_USER,IDC_PASSWORD,IDC_HINT,IDC_HINT2,IDCANCEL,IDC_STOREPASS,IDOK,
+                IDC_USRST,IDC_PWDST,IDC_ALWAYSOK,IDC_SHELLEXECOK,IDC_AUTOCANCEL};
 
 void MoveDlgCtrl(HWND hDlg,int nId,int x,int y,int dx,int dy)
 {
@@ -302,7 +305,8 @@ void SetWindowSizes(HWND hDlg)
   if (dx>0) 
   {
     MoveWnd(hDlg,-dx/2,0,dx,0);
-    for (int i=0;i<countof(SX_Ctrls);i++)
+    int i;
+    for (i=0;i<countof(SX_Ctrls);i++)
       MoveDlgCtrl(hDlg,SX_Ctrls[i],0,0,dx,0);
     for (i=0;i<countof(MX_Ctrls);i++)
       MoveDlgCtrl(hDlg,MX_Ctrls[i],dx,0,0,0);
@@ -312,7 +316,8 @@ void SetWindowSizes(HWND hDlg)
   if (dy>0)
   {
     MoveWnd(hDlg,0,-dy/2,0,dy);
-    for (int i=0;i<countof(SY_Ctrls);i++)
+    int i;
+    for (i=0;i<countof(SY_Ctrls);i++)
       MoveDlgCtrl(hDlg,SY_Ctrls[i],0,0,0,dy);
     for (i=0;i<countof(MY_Ctrls);i++)
       MoveDlgCtrl(hDlg,MY_Ctrls[i],0,dy,0,0);
@@ -327,11 +332,6 @@ INT_PTR CALLBACK DialogProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
   {
   case WM_INITDIALOG:
     {
-      if (g_WatchDogEvent)
-      {
-        SetEvent(g_WatchDogEvent);
-        SetTimer(hwnd,1265142,500,0);
-      }
       LOGONDLGPARAMS* p=(LOGONDLGPARAMS*)lParam;
       SetWindowLongPtr(hwnd,GWLP_USERDATA,lParam);
       if (IsWindowEnabled(GetDlgItem(hwnd,IDC_PASSWORD)))
@@ -391,7 +391,8 @@ INT_PTR CALLBACK DialogProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
       //FLAG_CANCEL_SX: if this is set this dialog will not show up
       //FLAG_AUTOCANCEL: if this is set this dialog will not show up
       CheckDlgButton(hwnd,IDC_ALWAYSOK,(p->UsrFlags&FLAG_DONTASK)?1:0);
-      
+      SendDlgItemMessage(hwnd,IDC_AUTOCANCEL,PBM_SETRANGE,0,MAKELPARAM(0,p->MaxTimeOut));
+      SendDlgItemMessage(hwnd,IDC_AUTOCANCEL,PBM_SETPOS,0,0);
       if((!GetUseIShExHook) && (!GetUseIATHook))
         EnableWindow(GetDlgItem(hwnd,IDC_SHELLEXECOK),0);
       SetUserBitmap(hwnd);
@@ -449,12 +450,13 @@ INT_PTR CALLBACK DialogProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
       {
         LOGONDLGPARAMS* p=(LOGONDLGPARAMS*)GetWindowLongPtr(hwnd,GWLP_USERDATA);
         p->TimeOut--;
-        if (p->TimeOut<0)
+        SendDlgItemMessage(hwnd,IDC_AUTOCANCEL,PBM_SETPOS,
+                           min(p->MaxTimeOut-p->TimeOut,p->MaxTimeOut),0);
+        if (p->TimeOut<=0)
           EndDialog(hwnd,0);
         else if (p->TimeOut<10)
           SetDlgItemText(hwnd,IDCANCEL,CResStr(IDS_CANCEL,p->TimeOut));
-      }else if ((wParam==1265142)&& g_WatchDogEvent)
-        SetEvent(g_WatchDogEvent);
+      }
       return TRUE;
     }
   case WM_COMMAND:
@@ -537,41 +539,53 @@ INT_PTR CALLBACK DialogProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
 //
 /////////////////////////////////////////////////////////////////////////////
 
-BOOL Logon(LPTSTR User,LPTSTR Password,int IDmsg,...)
+BOOL Logon(DWORD SessionId,LPTSTR User,LPTSTR Password,int IDmsg,...)
 {
   va_list va;
   va_start(va,IDmsg);
   CBigResStr S(IDmsg,va);
   LOGONDLGPARAMS p(S,User,Password,false,false,false);
-  p.Users.SetUsualUsers(FALSE);
+  p.Users.SetUsualUsers(SessionId,FALSE);
   return (BOOL)DialogBoxParam(GetModuleHandle(0),MAKEINTRESOURCE(IDD_LOGONDLG),
                   0,DialogProc,(LPARAM)&p);
 }
 
-BOOL RunAsLogon(LPTSTR User,LPTSTR Password,int IDmsg,...)
+DWORD ValidateCurrentUser(LPTSTR User,int IDmsg,...)
+{
+  va_list va;
+  va_start(va,IDmsg);
+  CBigResStr S(IDmsg,va);
+  TCHAR P[PWLEN]={0};
+  LOGONDLGPARAMS p(S,User,P,true,false,0);
+  p.Users.Add(User);
+  return (DWORD )DialogBoxParam(GetModuleHandle(0),MAKEINTRESOURCE(IDD_LOGONDLG),
+                  0,DialogProc,(LPARAM)&p);
+}
+
+BOOL RunAsLogon(DWORD SessionId,LPTSTR User,LPTSTR Password,int IDmsg,...)
 {
   va_list va;
   va_start(va,IDmsg);
   CBigResStr S(IDmsg,va);
   LOGONDLGPARAMS p(S,User,Password,false,false,false);
-  p.Users.SetUsualUsers(FALSE);
+  p.Users.SetUsualUsers(SessionId,FALSE);
   p.bRunAs=TRUE;
   return (BOOL)DialogBoxParam(GetModuleHandle(0),MAKEINTRESOURCE(IDD_RUNASDLG),
                   0,DialogProc,(LPARAM)&p);
 }
 
-BOOL LogonAdmin(LPTSTR User,LPTSTR Password,int IDmsg,...)
+BOOL LogonAdmin(DWORD SessionId,LPTSTR User,LPTSTR Password,int IDmsg,...)
 {
   va_list va;
   va_start(va,IDmsg);
   CBigResStr S(IDmsg,va);
   LOGONDLGPARAMS p(S,User,Password,false,true,false);
-  p.Users.SetGroupUsers(DOMAIN_ALIAS_RID_ADMINS,FALSE);
+  p.Users.SetGroupUsers(DOMAIN_ALIAS_RID_ADMINS,SessionId,FALSE);
   return (BOOL)DialogBoxParam(GetModuleHandle(0),MAKEINTRESOURCE(IDD_LOGONDLG),
                   0,DialogProc,(LPARAM)&p);
 }
 
-BOOL LogonAdmin(int IDmsg,...)
+BOOL LogonAdmin(DWORD SessionId,int IDmsg,...)
 {
   va_list va;
   va_start(va,IDmsg);
@@ -579,7 +593,7 @@ BOOL LogonAdmin(int IDmsg,...)
   TCHAR U[UNLEN+GNLEN+2]={0};
   TCHAR P[PWLEN]={0};
   LOGONDLGPARAMS p(S,U,P,false,true,false);
-  p.Users.SetGroupUsers(DOMAIN_ALIAS_RID_ADMINS,FALSE);
+  p.Users.SetGroupUsers(DOMAIN_ALIAS_RID_ADMINS,SessionId,FALSE);
   BOOL bRet=(BOOL)DialogBoxParam(GetModuleHandle(0),MAKEINTRESOURCE(IDD_LOGONDLG),
                     0,DialogProc,(LPARAM)&p);
   zero(U);
@@ -653,7 +667,7 @@ BOOL TestLogonDlg()
   if (l==-1)
     DBGTrace2("DialogBoxParam returned %d: %s",l,GetLastErrorNameStatic());
 
-  SetThreadLocale(MAKELCID(MAKELANGID(LANG_POLISH,0),SORT_DEFAULT));
+  SetThreadLocale(MAKELCID(MAKELANGID(LANG_DUTCH,SUBLANG_DUTCH),SORT_DEFAULT));
   
   l=Logon(User,Password,IDS_ASKAUTO);
   if (l==-1)

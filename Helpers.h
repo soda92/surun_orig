@@ -21,10 +21,18 @@
 #define HKCU HKEY_CURRENT_USER
 #define HKLM HKEY_LOCAL_MACHINE
 
+#ifdef _SR32
+#define KSAM(a) a|KEY_WOW64_64KEY
+#else
+#define KSAM(a) a
+#endif _SR32
+
+BOOL GetRegAnyPtr(HKEY HK,LPCTSTR SubKey,LPCTSTR ValName,DWORD* Type,BYTE* RetVal,DWORD* nBytes);
 BOOL GetRegAny(HKEY HK,LPCTSTR SubKey,LPCTSTR ValName,DWORD Type,BYTE* RetVal,DWORD* nBytes);
 BOOL SetRegAny(HKEY HK,LPCTSTR SubKey,LPCTSTR ValName,DWORD Type,BYTE* Data,DWORD nBytes);
 
 BOOL DelRegKey(HKEY hKey,LPTSTR pszSubKey);
+BOOL DelRegKeyChildren(HKEY hKey,LPTSTR pszSubKey);
 BOOL RegDelVal(HKEY HK,LPCTSTR SubKey,LPCTSTR ValName);
 
 BOOL SetRegInt(HKEY HK,LPCTSTR SubKey,LPCTSTR ValName,DWORD Value);
@@ -57,15 +65,20 @@ int inline SafeMsgBox(HWND w,LPTSTR m,LPTSTR c,DWORD f)
 };
 
 // Privilege stuff
-BOOL EnablePrivilege(HANDLE hToken,LPCTSTR name);
+BOOL DisablePrivilege(HANDLE hToken,LPCTSTR name);
+BOOL EnablePrivilege(HANDLE hToken,LPCTSTR name,DWORD how=SE_PRIVILEGE_ENABLED);
 BOOL EnablePrivilege(LPCTSTR name);
 
 //  AllowAccess
 void AllowAccess(HANDLE hObject);
 void SetRegistryTreeAccess(LPTSTR KeyName,LPTSTR Account,bool bAllow);
+void SetRegistryTreeAccess(LPTSTR KeyName,DWORD Rid,bool bAllow);
 BOOL HasRegistryKeyAccess(LPTSTR KeyName,LPTSTR Account);
+BOOL HasRegistryKeyAccess(LPTSTR KeyName,DWORD Rid);
 
 // SetAdminDenyUserAccess
+PACL SetAdminDenyUserAccess(PACL pOldDACL,PSID UserSID,DWORD Permissions=SYNCHRONIZE);
+void SetAdminDenyUserAccess(HANDLE hObject,PSID UserSID,DWORD Permissions=SYNCHRONIZE);
 void SetAdminDenyUserAccess(HANDLE hObject,DWORD ProcessID=0,DWORD Permissions=SYNCHRONIZE);
 
 // GetUserAccessSD
@@ -85,12 +98,28 @@ bool DeleteDirectory(LPCTSTR DIR);
 
 //UserName:
 bool GetSIDUserName(PSID sid,LPTSTR User,LPTSTR Domain=0);
+PSID GetTokenUserSID(HANDLE hToken);
 PSID GetProcessUserSID(DWORD ProcessID);
 bool GetTokenUserName(HANDLE hUser,LPTSTR User,LPTSTR Domain=0);
 bool GetProcessUserName(DWORD ProcessID,LPTSTR User,LPTSTR Domain=0);
 
 //Shell stuff
 HANDLE GetShellProcessToken();
+
+// GetTokenGroups
+PTOKEN_GROUPS	GetTokenGroups(HANDLE hToken);
+
+// GetLogonSid
+PSID GetLogonSid(HANDLE hToken);
+
+//UserIsInSuRunnersOrAdmins
+DWORD UserIsInSuRunnersOrAdmins();
+
+//  GetSessionUserToken
+HANDLE GetSessionUserToken(DWORD SessID);
+
+//  GetSessionLogonSID
+PSID GetSessionLogonSID(DWORD SessionID);
 
 // GetVersionString
 LPCTSTR GetVersionString();
@@ -111,3 +140,41 @@ protected:
   DWORD m_EndTime;
 };
 
+// CImpersonateSessionUser
+class CImpersonateSessionUser
+{
+public:
+  CImpersonateSessionUser(DWORD SessionID)
+  {
+    m_Token=0;
+    if (SessionID!=-1)
+    {
+      m_Token=GetSessionUserToken(SessionID);
+      if(m_Token)
+      {
+        if (!ImpersonateLoggedOnUser(m_Token))
+        {
+          CloseHandle(m_Token);
+          m_Token=0;
+        }
+      }
+    }
+  }
+  ~CImpersonateSessionUser()
+  {
+    if (m_Token)
+    {
+      RevertToSelf();
+      CloseHandle(m_Token);
+    }
+  }
+protected:
+  HANDLE m_Token;
+};
+
+// strwldcmp returns true if s matches pattern case insensitive
+// pattern may contain '*' and '?' as wildcards
+// '?' any "one" character in s match
+// '*' any "zero or more" characters in s match
+// e.G. strwldcmp("Test me","t*S*") strwldcmp("Test me","t?S*e") would match
+bool strwldcmp(LPCTSTR s, LPCTSTR pattern) ;

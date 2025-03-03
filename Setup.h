@@ -16,11 +16,11 @@
 #include <tchar.h>
 #include "helpers.h"
 #include "IsAdmin.h"
+#include "UserGroups.h"
 #include "resstr.h"
 #include "SuRunExt/SuRunExt.h"
 
 #define WATCHDOG_EVENT_NAME   _T("SURUN_WATCHDOG_EVENT")
-#define STAYONDESK_EVENT_NAME _T("SURUN_STAYONDESK_EVENT")
 
 //////////////////////////////////////////////////////////////////////////////
 // 
@@ -36,7 +36,11 @@
 #define USERKEY(u)    CBigResStr(SVCKEY _T("\\%s\\Settings"),u)
 
 #define RAPASSKEY(u)  CBigResStr(SVCKEY _T("\\RunAs\\%s\\Cache"),u)
-#define USROPTKEY(u)  CBigResStr(_T("CLSID\\") sGUID _T("\\Options\\%s"),u)
+#define SHEXOPTKEY     _T("CLSID\\") sGUID _T("\\Options")
+#define USROPTKEY(u)  CBigResStr(SHEXOPTKEY _T("\\%s"),u)
+
+#define WINLOGONKEY _T("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\\Notify\\SuRun")
+#define SURUNKEY    _T("SOFTWARE\\SuRun")
 //////////////////////////////////////////////////////////////////////////////
 // 
 //  Macros for all Settings
@@ -57,6 +61,17 @@
 #define GetFadeDesk       (GetOption(_T("FadeDesktop"),1)!=0)
 #define SetFadeDesk(b)    SetOption(_T("FadeDesktop"),b,1)
 
+//Save or not Passwords in the registry
+#define GetAskPW         ((GetOption(_T("SavePasswords"),1)==0) || (GetPwTimeOut!=0))
+
+#define GetSavePW         (GetOption(_T("SavePasswords"),1)!=0)
+#define SetSavePW(b)      SetOption(_T("SavePasswords"),b,1); \
+                          if (!b) \
+                          { \
+                            DelRegKey(HKLM,PASSWKEY); \
+                            DelRegKey(HKLM,TIMESKEY); \
+                          }
+
 //Minutes to wait until "Is that OK?" is asked again
 #define GetPwTimeOut      min(60,max(0,(int)GetOption(_T("AskTimeOut"),0)))
 #define SetPwTimeOut(t)   SetOption(_T("AskTimeOut"),(DWORD)min(60,max(0,(int)t)),0)
@@ -69,22 +84,13 @@
 #define GetNoConvUser     (GetOption(_T("NoAutoUserToSuRunner"),0)!=0)
 #define SetNoConvUser(b)  SetOption(_T("NoAutoUserToSuRunner"),b,0)
 
-//New SuRunners are Restricted
-#define GetRestrictNew    (GetOption(_T("RestrictNewRunner"),0)!=0)
-#define SetRestrictNew(b) SetOption(_T("RestrictNewRunner"),b,0)
+//Test Manifest and file name of started files
+#define GetTestReqAdmin    (GetOption(_T("TestReqAdmin"),1)!=0)
+#define SetTestReqAdmin(b) SetOption(_T("TestReqAdmin"),b,1)
 
-//New SuRunners may not Run Setup
-#define GetNoSetupNew     (GetOption(_T("NewRunnerDenySetup"),0)!=0)
-#define SetNoSetupNew(b)  SetOption(_T("NewRunnerDenySetup"),b,0)
-
-//Save or not Passwords in the registry
-#define GetSavePW         (GetOption(_T("SavePasswords"),1)!=0)
-#define SetSavePW(b)      SetOption(_T("SavePasswords"),b,1); \
-                          if (!b) \
-                          { \
-                            DelRegKey(HKLM,PASSWKEY); \
-                            DelRegKey(HKLM,TIMESKEY); \
-                          }
+//Hide Expert settings
+#define GetHideExpertSettings    (GetOption(_T("HideExpertSettings"),1)!=0)
+#define SetHideExpertSettings(b) SetOption(_T("HideExpertSettings"),b,1)
 
 //Show warning if Admin has no password to:
 #define APW_ALL         0
@@ -93,8 +99,8 @@
 #define APW_ADMIN       3
 #define APW_NONE        4
 
-#define GetAdminNoPassWarn    GetOption(L"AdminNoPassWarn",2)
-#define SetAdminNoPassWarn(v) SetOption(L"AdminNoPassWarn",v,2)
+#define GetAdminNoPassWarn    GetOption(L"AdminNoPassWarn",APW_NR_SR_ADMIN)
+#define SetAdminNoPassWarn(v) SetOption(L"AdminNoPassWarn",v,APW_NR_SR_ADMIN)
 
 //////////////////////////////////////////////////////////////////////////////
 //Settings for every user; saved to "HKLM\SECURITY\SuRun\<ComputerName>\<UserName>":
@@ -105,6 +111,10 @@
 
 #define DelUsrSettings(u)       DelRegKey(HKLM,WHTLSTKEY(u));\
                                 DelRegKey(HKCR,USROPTKEY(u))
+                                
+#define DelAllUsrSettings       DelRegKeyChildren(HKLM,SVCKEY);\
+                                DelRegKey(HKCR,SHEXOPTKEY)
+                                  
 
 //SuRunner is not allowed to run Setup
 #define GetNoRunSetup(u)      (GetUsrSetting(u,_T("AdminOnlySetup"),0)!=0)
@@ -123,6 +133,10 @@
 #define SetShExtSetting(s,v,d)  if (GetShExtSetting(s,d)!=v)\
                                   SetRegInt(HKCR,L"CLSID\\" sGUID,s,v)
 
+//Hide SuRun from non SuRunners
+#define GetDefHideSuRun    (GetShExtSetting(_T("HideSuRunFromNonSuRunners"),0)!=0)
+#define SetDefHideSuRun(b) SetShExtSetting(_T("HideSuRunFromNonSuRunners"),b,0)
+
 //the following settings are stored in: HKCR\\CLSID\\sGUID
 #define ControlAsAdmin  L"ControlAsAdmin"  //"Control Panel As Admin" on Desktop Menu
 #define CmdHereAsAdmin  L"CmdHereAsAdmin"  //"Cmd here As Admin" on Folder Menu
@@ -132,17 +146,18 @@
 
 #define UseIShExHook    L"UseIShExHook"    //install IShellExecuteHook
 #define UseIATHook      L"UseIATHook"      //install IAT Hook
-#define UseAppInit      L"UseAppInit"      //use AppInit_DLLs
 #define UseRemoteThread L"UseRemoteThread" //use CreateRemoteThread
 
 #define ShowAutoRuns    L"ShowAutoRuns"    //use Show Message in Tray
+
+#define UseSuRunGrp     L"UseSuRunners"    //use SuRunners Group
 
 //"Control Panel As Admin" on Desktop Menu
 #define GetCtrlAsAdmin        (GetShExtSetting(ControlAsAdmin,1)!=0)
 #define SetCtrlAsAdmin(b)     SetShExtSetting(ControlAsAdmin,b,1)
 //"Cmd here As Admin" on Folder Menu
-#define GetCmdAsAdmin         (GetShExtSetting(CmdHereAsAdmin,1)!=0)
-#define SetCmdAsAdmin(b)      SetShExtSetting(CmdHereAsAdmin,b,1)
+#define GetCmdAsAdmin         (GetShExtSetting(CmdHereAsAdmin,0)!=0)
+#define SetCmdAsAdmin(b)      SetShExtSetting(CmdHereAsAdmin,b,0)
 //"Explorer here As Admin" on Folder Menu
 #define GetExpAsAdmin         (GetShExtSetting(ExpHereAsAdmin,1)!=0)
 #define SetExpAsAdmin(b)      SetShExtSetting(ExpHereAsAdmin,b,1)
@@ -150,14 +165,17 @@
 #define GetRestartAsAdmin     (GetShExtSetting(RestartAsAdmin,1)!=0)
 #define SetRestartAsAdmin(b)  SetShExtSetting(RestartAsAdmin,b,1)
 //"Start As Admin" in System-Menu
-#define GetStartAsAdmin       (GetShExtSetting(StartAsAdmin,1)!=0)
-#define SetStartAsAdmin(b)    SetShExtSetting(StartAsAdmin,b,1)
+#define GetStartAsAdmin       (GetShExtSetting(StartAsAdmin,0)!=0)
+#define SetStartAsAdmin(b)    SetShExtSetting(StartAsAdmin,b,0)
+
+#define GetUseSuRunGrp        (1/*GetShExtSetting(UseSuRunGrp,1)!=0*/)
+//#define SetUseSuRunGrp(b)     SetShExtSetting(UseSuRunGrp,b,1)
 
 //Hook stuff
 #define GetUseIShExHook       (GetShExtSetting(UseIShExHook,1)!=0)
 #define SetUseIShExHook(b)     SetShExtSetting(UseIShExHook,b,1)
-#define GetUseIATHook         (GetShExtSetting(UseIATHook,0)!=0)
-#define SetUseIATHook(b)       SetShExtSetting(UseIATHook,b,0)
+#define GetUseIATHook         (GetShExtSetting(UseIATHook,1)!=0)
+#define SetUseIATHook(b)       SetShExtSetting(UseIATHook,b,1)
 
 //TrayMsg stuff
 #define GetShowAutoRuns       (GetShExtSetting(ShowAutoRuns,1)!=0)
@@ -169,8 +187,8 @@
 #define TSA_ADMIN 2 //TSA for admins
 #define TSA_TIPS  8 //show balloon tips
 
-#define GetShowTrayAdmin      GetShExtSetting(_T("ShowTrayAdmin"),0)
-#define SetShowTrayAdmin(b)   SetShExtSetting(_T("ShowTrayAdmin"),b,0)
+#define GetShowTrayAdmin      GetShExtSetting(_T("ShowTrayAdmin"),TSA_ADMIN|TSA_TIPS)
+#define SetShowTrayAdmin(b)   SetShExtSetting(_T("ShowTrayAdmin"),b,TSA_ADMIN|TSA_TIPS)
 
 
 //Show App admin status in system tray per user setting
@@ -180,16 +198,23 @@
 
 #define DelUsrOption(u,s)     RegDelVal(HKCR,USROPTKEY(u),s)
 
-#define GetUserTSA(u)         GetUsrOption(u,_T("ShowTrayAdmin"),-1)
-#define SetUserTSA(u,v)       SetUsrOption(u,_T("ShowTrayAdmin"),v,-1)
-#define DelUserTSA(u)         DelUsrOption(u,_T("ShowTrayAdmin"))
+#define GetUserTSA(u)         GetUsrOption(u,_T("ShowTrayAdmin"),2)
+#define SetUserTSA(u,v)       SetUsrOption(u,_T("ShowTrayAdmin"),v,2)
 
-inline bool ShowTray(LPCTSTR u)
+#define GetHideFromUser(u)    GetUsrOption(u,_T("HideFromUser"),0)
+#define SetHideFromUser(u,h)  SetUsrOption(u,_T("HideFromUser"),h,0)
+
+#define HideSuRun(u,Grps)   ((Grps&IS_IN_ADMINS)?0:GetUsrOption(u,_T("HideFromUser"),\
+                              (Grps&IS_IN_SURUNNERS)?0:GetDefHideSuRun))
+
+#define GetReqPw4Setup(u)    GetUsrOption(u,_T("ReqPw4Setup"),0)
+#define SetReqPw4Setup(u,b)  SetUsrOption(u,_T("ReqPw4Setup"),b,0)
+
+inline BOOL ShowTray(LPCTSTR u,BOOL bAdmin,BOOL bSuRunner)
 {
-  int utsa=(int)GetUserTSA(u);
-  if (utsa>0)
-    return true;
-  if (utsa==0)
+  if (bSuRunner)
+    return (!GetHideFromUser(u)) && (GetUserTSA(u)>0);
+  if ((!bAdmin) && GetDefHideSuRun)
     return false;
   switch (GetShowTrayAdmin & (~TSA_TIPS))
   {
@@ -198,15 +223,17 @@ inline bool ShowTray(LPCTSTR u)
   case TSA_ALL:
     return true;
   case TSA_ADMIN:
-    return IsAdmin()!=0;
+    return bAdmin;
   }
   return false;
 }
 
-inline bool ShowBalloon(LPCTSTR u)
+inline BOOL ShowBalloon(LPCTSTR u,BOOL bAdmin,BOOL bSuRunner)
 {
-  if (GetUserTSA(u)==2)
-    return true;
+  if (bSuRunner)
+    return (!GetHideFromUser(u)) && (GetUserTSA(u)==2);
+  if ((!bAdmin) && GetDefHideSuRun)
+    return false;
   DWORD tsa=GetShowTrayAdmin;
   if((tsa & TSA_TIPS)==0)
     return false;
@@ -217,58 +244,53 @@ inline bool ShowBalloon(LPCTSTR u)
   case TSA_ALL:
     return true;
   case TSA_ADMIN:
-    return IsAdmin()!=0;
+    return bAdmin;
   }
   return false;
 }
-
-//#define GetUseRmteThread      (GetShExtSetting(UseRemoteThread,0)!=0)
-//#define SetUseRmteThread(b)    SetShExtSetting(UseRemoteThread,b,0)
-  //...This is defined here but stored in HKLM\Security:
-//#define GetUseAppInit         (GetOption(UseAppInit,0)!=0)
-//#define SetUseAppInit(b)       SetOption(UseAppInit,b,0)
 
 //////////////////////////////////////////////////////////////////////////////
 //  Windows Policy Stuff
 //////////////////////////////////////////////////////////////////////////////
 
-#define IsOwnerAdminGrp     (GetRegInt(HKLM,\
+#define SRGetOwnerAdminGrp   (GetShExtSetting(L"DefaultOwnerAdmins",0)!=0)
+
+#define GetOwnerAdminGrp      (GetRegInt(HKLM,\
                               _T("SYSTEM\\CurrentControlSet\\Control\\Lsa"),\
                               _T("nodefaultadminowner"),1)==0)
 
-#define SetOwnerAdminGrp(b) SetRegInt(HKLM,\
+#define SetOwnerAdminGrp(b)   {SetRegInt(HKLM,\
                               _T("SYSTEM\\CurrentControlSet\\Control\\Lsa"),\
-                              _T("nodefaultadminowner"),(b)==0)
+                              _T("nodefaultadminowner"),(b)==0);\
+                              SetShExtSetting(L"DefaultOwnerAdmins",b,0);}
 
-#define IsWinUpd4All      GetRegInt(HKLM,\
+#define SRGetWinUpd4All     (GetShExtSetting(L"ShowWindowsUpdateForAll",0)!=0)
+
+#define GetWinUpd4All     (GetRegInt(HKLM,\
                             _T("SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate"),\
-                            _T("ElevateNonAdmins"),0)
+                            _T("ElevateNonAdmins"),0)!=0)
 
-#define SetWinUpd4All(b)  SetRegInt(HKLM,\
+#define SetWinUpd4All(b)  {SetRegInt(HKLM,\
                             _T("SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate"),\
-                            _T("ElevateNonAdmins"),b)
+                            _T("ElevateNonAdmins"),b);\
+                          SetShExtSetting(L"ShowWindowsUpdateForAll",b,0);}
 
-#define IsWinUpdBoot      GetRegInt(HKLM,\
+#define SRGetWinUpdBoot     (GetShExtSetting(L"WindowsUpdateNoReboot",0)!=0)
+
+#define GetWinUpdBoot     (GetRegInt(HKLM,\
                             _T("SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU"),\
-                            _T("NoAutoRebootWithLoggedOnUsers"),0)
+                            _T("NoAutoRebootWithLoggedOnUsers"),0)!=0)
 
-#define SetWinUpdBoot(b)  SetRegInt(HKLM,\
+#define SetWinUpdBoot(b)  {SetRegInt(HKLM,\
                             _T("SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU"),\
-                            _T("NoAutoRebootWithLoggedOnUsers"),b)
+                            _T("NoAutoRebootWithLoggedOnUsers"),b);\
+                            SetShExtSetting(L"WindowsUpdateNoReboot",b,0);}
 
-#define CanSetEnergy  HasRegistryKeyAccess(_T("MACHINE\\Software\\Microsoft\\")\
+#define GetSetEnergy    HasRegistryKeyAccess(_T("MACHINE\\Software\\Microsoft\\")\
                     _T("Windows\\CurrentVersion\\Controls Folder\\PowerCfg"),SURUNNERSGROUP)
 
-#define SetEnergy(b)  SetRegistryTreeAccess(_T("MACHINE\\Software\\Microsoft\\")\
-                    _T("Windows\\CurrentVersion\\Controls Folder\\PowerCfg"),SURUNNERSGROUP,b)
-
-#define GetSeparateProcess GetRegInt(HKCU,\
-                    _T("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced"),\
-                    _T("SeparateProcess"),0)
-
-#define SetSeparateProcess(b) SetRegInt(HKCU,\
-                    _T("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced"),\
-                    _T("SeparateProcess"),b)
+#define SetSetEnergy(b) SetRegistryTreeAccess(_T("MACHINE\\Software\\Microsoft\\")\
+                    _T("Windows\\CurrentVersion\\Controls Folder\\PowerCfg"),SURUNNERSGROUP,b!=0)
 
 //////////////////////////////////////////////////////////////////////////////
 // 
@@ -276,9 +298,7 @@ inline bool ShowBalloon(LPCTSTR u)
 // 
 //////////////////////////////////////////////////////////////////////////////
 
-void LoadPassword(LPTSTR UserName,LPTSTR Password,DWORD nBytes);
 void DeletePassword(LPTSTR UserName);
-void SavePassword(LPTSTR UserName,LPTSTR Password);
 
 //////////////////////////////////////////////////////////////////////////////
 // 
@@ -297,16 +317,24 @@ void UpdLastRunTime(LPTSTR UserName);
 
 #define FLAG_DONTASK    0x01 //SuRun will not ask if App can be executed
 #define FLAG_SHELLEXEC  0x02 //ShellExecute hook will execute App elevated
-#define FLAG_NORESTRICT 0x04 //Restricted SuRunner may execute App elevated
+//deleted flag: #define FLAG_NORESTRICT 0x04 //Restricted SuRunner may execute App elevated
 #define FLAG_AUTOCANCEL 0x08 //SuRun will always answer "cancel"
 #define FLAG_CANCEL_SX  0x10 //SuRun will answer "cancel" on ShellExec
 
-BOOL IsInWhiteList(LPTSTR User,LPTSTR CmdLine,DWORD Flag);
-DWORD GetWhiteListFlags(LPTSTR User,LPTSTR CmdLine,DWORD Default);
-BOOL AddToWhiteList(LPTSTR User,LPTSTR CmdLine,DWORD Flags=0);
-BOOL SetWhiteListFlag(LPTSTR User,LPTSTR CmdLine,DWORD Flag,bool Enable);
-BOOL ToggleWhiteListFlag(LPTSTR User,LPTSTR CmdLine,DWORD Flag);
-BOOL RemoveFromWhiteList(LPTSTR User,LPTSTR CmdLine);
+BOOL IsInWhiteList(LPCTSTR User,LPCTSTR CmdLine,DWORD Flag);
+DWORD GetWhiteListFlags(LPCTSTR User,LPCTSTR CmdLine,DWORD Default);
+BOOL AddToWhiteList(LPCTSTR User,LPCTSTR CmdLine,DWORD Flags=0);
+BOOL SetWhiteListFlag(LPCTSTR User,LPCTSTR CmdLine,DWORD Flag,bool Enable);
+BOOL ToggleWhiteListFlag(LPCTSTR User,LPCTSTR CmdLine,DWORD Flag);
+BOOL RemoveFromWhiteList(LPCTSTR User,LPCTSTR CmdLine);
+
+//////////////////////////////////////////////////////////////////////////////
+// 
+//  BlackList for IATHook
+// 
+//////////////////////////////////////////////////////////////////////////////
+#define HKLSTKEY    SURUNKEY _T("\\DoNotHook")
+BOOL IsInBlackList(LPCTSTR CmdLine);
 
 //////////////////////////////////////////////////////////////////////////////
 // 
@@ -318,9 +346,18 @@ void ReplaceSuRunWithRunAs(HKEY hKey=HKCR);
 
 //////////////////////////////////////////////////////////////////////////////
 // 
+//  Import/Export
+// 
+//////////////////////////////////////////////////////////////////////////////
+
+//void ImportSettings(LPCTSTR ini,bool bSuRunSettings,bool bBlackList,LPCTSTR User);
+//void ExportSettings(LPCTSTR ini,bool bSuRunSettings,bool bBlackList,LPCTSTR User);
+
+//////////////////////////////////////////////////////////////////////////////
+// 
 //  Setup
 // 
 //////////////////////////////////////////////////////////////////////////////
 
-BOOL RunSetup();
+BOOL RunSetup(DWORD SessionID,LPCTSTR User);
 

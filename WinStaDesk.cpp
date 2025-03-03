@@ -81,53 +81,41 @@ BOOL GetDesktopName(LPTSTR DeskName,DWORD ccDeskName)
 
 void SetProcWinStaDesk(LPCTSTR WinSta,LPCTSTR Desk)
 {
-  HWINSTA hws = WinSta?OpenWindowStation(WinSta,0,MAXIMUM_ALLOWED):0;
-	if (!hws)
+  if (WinSta)
   {
-    DBGTrace2("OpenWindowStation(%s) failed: %s",WinSta,GetLastErrorNameStatic());
-  }else
-  {
-    SetProcessWindowStation(hws);
-    if (!CloseWindowStation(hws))
-      DBGTrace1("CloseWindowStation failed: %s",GetLastErrorNameStatic());
+    HWINSTA hws = WinSta?OpenWindowStation(WinSta,0,MAXIMUM_ALLOWED):0;
+    if (!hws)
+    {
+      DBGTrace2("OpenWindowStation(%s) failed: %s",WinSta,GetLastErrorNameStatic());
+    }else
+    {
+      if (!SetProcessWindowStation(hws))
+        DBGTrace1("SetProcessWindowStation failed: %s",GetLastErrorNameStatic());
+      if (!CloseWindowStation(hws))
+        DBGTrace1("CloseWindowStation failed: %s",GetLastErrorNameStatic());
+    }
   }
-  HDESK hd = OpenDesktop(Desk,0,0,MAXIMUM_ALLOWED);
-  if (!hd)
+  if (Desk)
   {
-    DBGTrace2("OpenDesktop(%s) failed: %s",Desk,GetLastErrorNameStatic());
-  }else
-  {
-    if (!SetThreadDesktop(hd))
-      DBGTrace1("SetThreadDesktop failed: %s",GetLastErrorNameStatic());
-    if (!CloseDesktop(hd))
-      DBGTrace1("CloseDesktop failed: %s",GetLastErrorNameStatic());
+    HDESK hd = OpenDesktop(Desk,0,0,MAXIMUM_ALLOWED);
+    if (!hd)
+    {
+      DBGTrace2("OpenDesktop(%s) failed: %s",Desk,GetLastErrorNameStatic());
+    }else
+    {
+      if (!SetThreadDesktop(hd))
+        DBGTrace1("SetThreadDesktop failed: %s",GetLastErrorNameStatic());
+      if (!CloseDesktop(hd))
+        DBGTrace1("CloseDesktop failed: %s",GetLastErrorNameStatic());
+    }
   }
 }
 
 void SetAccessToWinDesk(HANDLE htok,LPCTSTR WinSta,LPCTSTR Desk,BOOL bGrant)
 {
-	BYTE tgs[4096];
-	DWORD cbtgs = sizeof tgs;
-	if (!GetTokenInformation(htok,TokenGroups,tgs,cbtgs,&cbtgs))
-  {
-    DBGTrace1("GetTokenInformation failed: %s",GetLastErrorNameStatic());
+	PSID psidLogonSession=GetLogonSid(htok);
+	if (!psidLogonSession)
     return;
-  }
-	const TOKEN_GROUPS* ptgs = (TOKEN_GROUPS*)(tgs);
-	const SID_AND_ATTRIBUTES* it = ptgs->Groups;
-	const SID_AND_ATTRIBUTES* end = it + ptgs->GroupCount;
-	while (end!=it)
-	{
-		if ((it->Attributes & SE_GROUP_LOGON_ID)==SE_GROUP_LOGON_ID)
-			break;
-		++it;
-	}
-	if (end==it)
-  {
-    DBGTrace("UNEXPECTED: No Logon SID in TokenGroups");
-    return;
-  }
-	void* psidLogonSession = it->Sid;
   HWINSTA hws = WinSta?OpenWindowStation(WinSta,0,MAXIMUM_ALLOWED):0;
 	if (WinSta && (!hws))
   {
@@ -216,6 +204,7 @@ void SetAccessToWinDesk(HANDLE htok,LPCTSTR WinSta,LPCTSTR Desk,BOOL bGrant)
     if(hws)
       CloseWindowStation(hws);
 	}
+  free(psidLogonSession);
 }
 
 void GrantUserAccessToDesktop(HDESK hDesk)
@@ -301,7 +290,7 @@ void DenyUserAccessToDesktop(HDESK hDesk)
 class CRunOnNewDeskTop
 {
 public:
-  CRunOnNewDeskTop(LPCTSTR WinStaName,LPCTSTR DeskName,bool bCreateBkWnd,bool bFadeIn);
+  CRunOnNewDeskTop(LPCTSTR WinStaName,LPCTSTR DeskName,LPCTSTR UserDesk,bool bCreateBkWnd,bool bFadeIn);
   ~CRunOnNewDeskTop();
   bool IsValid();
   void CleanUp();
@@ -323,81 +312,14 @@ public:
 CRunOnNewDeskTop* g_RunOnNewDesk=NULL;
 
 //////////////////////////////////////////////////////////////////////////////
-//
-// CStayOnDeskTop
-//
-// There's no way to keep a thread in a different process from calling 
-// SwitchDesktop(). 
-// Even worse: Microsoft suggests using SwitchDeskTop(OpenDesktop("Default"))
-// to detect if a screen saver or logon screen is active. 
-// Apparently ShedHlp.exe from Acronis TrueImage 11 uses this trick. So I'm
-// forced to use CStayOnDeskTop to switch back to SuRuns desktop.
-//////////////////////////////////////////////////////////////////////////////
-
-//if g_StayOnDeskEvent is SET, CStayOnDeskTop will keep switching to the safe desktop
-HANDLE g_StayOnDeskEvent=NULL;
-
-class CStayOnDeskTop
-{
-public:
-  CStayOnDeskTop(LPCTSTR DeskName)
-  {
-    m_DeskName=_tcsdup(DeskName);
-    m_Thread=CreateThread(0,0,ThreadProc,this,0,0);
-  }
-  ~CStayOnDeskTop()
-  {
-    LPTSTR s=m_DeskName;
-    m_DeskName=0;
-    free(s);
-    if(m_Thread)
-      WaitForSingleObject(m_Thread,INFINITE);
-    while (m_Thread)
-      Sleep(55);
-  }
-  static DWORD WINAPI ThreadProc(void* p)
-  {
-    CStayOnDeskTop* t=(CStayOnDeskTop*)p;
-    SetThreadPriority(t->m_Thread,THREAD_PRIORITY_IDLE);
-    LPTSTR DeskName=_tcsdup(t->m_DeskName);
-    while (t->m_DeskName)
-    {
-      if ((g_StayOnDeskEvent==NULL)
-        ||(WaitForSingleObject(g_StayOnDeskEvent,0)==WAIT_OBJECT_0))
-      {
-        HDESK i=OpenInputDesktop(0,FALSE,DESKTOP_SWITCHDESKTOP);
-        if (i!=0)
-        {
-          TCHAR n[MAX_PATH]={0};
-          DWORD l=MAX_PATH;
-          if (g_RunOnNewDesk
-            && GetUserObjectInformation(i,UOI_NAME,n,l,&l)
-            && _tcsicmp(n,DeskName))
-            g_RunOnNewDesk->SwitchToOwnDesk();
-          CloseDesktop(i);
-        }
-      }
-      Sleep(10);
-    }
-    free(DeskName);
-    t->m_Thread=0;
-    return 0;
-  }
-private:
-  LPTSTR m_DeskName;
-  HANDLE m_Thread;
-};
-
-CStayOnDeskTop* g_StayOnDesk=NULL;
-
-//////////////////////////////////////////////////////////////////////////////
 // 
 // CRunOnNewDeskTop:
 //   create and Switch to Desktop, switch back when Object is deleted
 // 
 //////////////////////////////////////////////////////////////////////////////
 
-CRunOnNewDeskTop::CRunOnNewDeskTop(LPCTSTR WinStaName,LPCTSTR DeskName,bool bCreateBkWnd,bool bFadeIn)
+CRunOnNewDeskTop::CRunOnNewDeskTop(LPCTSTR WinStaName,LPCTSTR DeskName,
+                                   LPCTSTR UserDesk,bool bCreateBkWnd,bool bFadeIn)
 {
   m_hDeskSwitch=NULL;
   m_hwinstaUser=NULL;
@@ -433,20 +355,7 @@ CRunOnNewDeskTop::CRunOnNewDeskTop(LPCTSTR WinStaName,LPCTSTR DeskName,bool bCre
     if (!SetProcessWindowStation(m_hwinstaUser))
       DBGTrace1("CRunOnNewDeskTop::SetProcessWindowStation failed: %s",GetLastErrorNameStatic());
   }
-  //Get interactive Desktop
-  m_hDeskSwitch=OpenInputDesktop(0,FALSE,DESKTOP_SWITCHDESKTOP/*DESKTOP_ALL_ACCESS|WRITE_DAC|READ_CONTROL*/);
-  if (!m_hDeskSwitch)
-  {
-    DBGTrace1("CRunOnNewDeskTop::OpenInputDesktop failed: %s",GetLastErrorNameStatic());
-    return;
-  }
-  //Set Interactive Desktop as current Desktop to get the Desktop Bitmap
-  if (!SetThreadDesktop(m_hDeskSwitch))
-    DBGTrace1("CRunOnNewDeskTop::SetThreadDesktop(m_hDeskSwitch) failed!: %s",GetLastErrorNameStatic());
-  //Create Background Bitmap
-  if (bCreateBkWnd)
-    m_Screen.Init();
-  //Create a new Desktop and set as the Threads Desktop
+  //Create a new Desktop 
   LenD=MAX_PATH;
   GetUserObjectInformation(m_hdeskSave,UOI_NAME,dtn,LenD,&LenD);
   if ((dtn[0]==TCHAR('\0')) || _tcsicmp(dtn,DeskName))
@@ -465,13 +374,26 @@ CRunOnNewDeskTop::CRunOnNewDeskTop(LPCTSTR WinStaName,LPCTSTR DeskName,bool bCre
     }
     LocalFree(saDesktop.lpSecurityDescriptor);
   }
+  //Open a handle to the user Desktop
+  m_hDeskSwitch=OpenDesktop(UserDesk,0,FALSE,DESKTOP_SWITCHDESKTOP);
+  if (!m_hDeskSwitch)
+  {
+    DBGTrace1("CRunOnNewDeskTop::OpenInputDesktop failed: %s",GetLastErrorNameStatic());
+    return;
+  }
+  //Set Interactive Desktop as current Desktop to get the Desktop Bitmap
+  if (!SetThreadDesktop(m_hDeskSwitch))
+    DBGTrace1("CRunOnNewDeskTop::SetThreadDesktop(m_hDeskSwitch) failed!: %s",GetLastErrorNameStatic());
+  //Create Background Bitmap
+  if (bCreateBkWnd)
+    m_Screen.Init();
+  //set m_hdeskUser as the Threads Desktop
   if (!SetThreadDesktop(m_hdeskUser))
   {
     DBGTrace("CRunOnNewDeskTop::SetThreadDesktop failed!");
     CleanUp();
     return;
   }
-  //DenyUserAccessToDesktop(m_hDeskSwitch);
   //Show Desktop Background
   if (bCreateBkWnd)
     m_Screen.Show(bFadeIn);
@@ -488,9 +410,15 @@ void CRunOnNewDeskTop::SwitchToOwnDesk()
 
 void CRunOnNewDeskTop::SwitchToUserDesk()
 {
-  //Switch to the new Desktop
-  if (!SwitchDesktop(m_hDeskSwitch))
+  for(;m_hDeskSwitch;Sleep(100))
+  {
+    //Switch to the new Desktop
+    if (SwitchDesktop(m_hDeskSwitch))
+      return;
+    if (GetLastError()==ERROR_INVALID_HANDLE)
+      m_hDeskSwitch=0;
     DBGTrace1("CRunOnNewDeskTop::SwitchDesktop failed: %s",GetLastErrorNameStatic());
+  }
 }
 
 void CRunOnNewDeskTop::FadeOut()
@@ -500,11 +428,11 @@ void CRunOnNewDeskTop::FadeOut()
 
 void CRunOnNewDeskTop::CleanUp()
 {
+  //GrantUserAccessToDesktop(m_hDeskSwitch);
   //Switch back to the interactive Desktop
+  SwitchToUserDesk();
   if(m_hDeskSwitch)
   {
-    //GrantUserAccessToDesktop(m_hDeskSwitch);
-    SwitchToUserDesk();
     if (!CloseDesktop(m_hDeskSwitch))
       DBGTrace1("CRunOnNewDeskTop: CloseDesktop failed: %s",GetLastErrorNameStatic());
     m_hDeskSwitch=NULL;
@@ -546,12 +474,25 @@ bool CRunOnNewDeskTop::IsValid()
 
 LONG WINAPI ExceptionFilter(struct _EXCEPTION_POINTERS *ExceptionInfo )
 {
+  DBGTrace("FATAL: Exception in SuRun!");
   DeleteSafeDesktop(0);
   return EXCEPTION_EXECUTE_HANDLER;
 }
 
 HANDLE g_WatchDogEvent=NULL;
 HANDLE g_WatchDogProcess=NULL;
+HANDLE g_WatchDogThread=NULL;
+
+static DWORD WINAPI WDEventProc(void* p)
+{
+  SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_IDLE);
+  while (g_WatchDogEvent)
+  {
+    SetEvent(g_WatchDogEvent);
+    Sleep(100);
+  }
+  return 0;
+}
 
 bool CreateSafeDesktop(LPTSTR WinSta,LPCTSTR UserDesk,bool BlurDesk,bool bFade)
 {
@@ -560,10 +501,19 @@ bool CreateSafeDesktop(LPTSTR WinSta,LPCTSTR UserDesk,bool BlurDesk,bool bFade)
     SetUnhandledExceptionFilter(ExceptionFilter);
   //Every "secure" Desktop has its own name:
   CResStr DeskName(L"SRD_%04x",GetTickCount());
+  //Create Desktop
+  CRunOnNewDeskTop* rond=new CRunOnNewDeskTop(WinSta,DeskName,UserDesk,BlurDesk,bFade);
+  g_RunOnNewDesk=rond;
+  if ((!g_RunOnNewDesk)||(!g_RunOnNewDesk->IsValid()))
+  {
+    DeleteSafeDesktop(false);
+    return false;
+  }
   //Start watchdog process:
+  PROCESS_INFORMATION pi={0};
   g_WatchDogEvent=CreateEvent(0,1,0,WATCHDOG_EVENT_NAME);
-  g_StayOnDeskEvent=CreateEvent(0,1,1,STAYONDESK_EVENT_NAME);
-  if (g_WatchDogEvent && g_StayOnDeskEvent)
+  g_WatchDogThread=CreateThread(0,0,WDEventProc,0,0,0);
+  if (g_WatchDogEvent)
   {
     TCHAR SuRunExe[4096];
     GetSystemWindowsDirectory(SuRunExe,4096);
@@ -572,29 +522,23 @@ bool CreateSafeDesktop(LPTSTR WinSta,LPCTSTR UserDesk,bool BlurDesk,bool bFade)
     _tcscat(SuRunExe,DeskName);
     _tcscat(SuRunExe,L" ");
     _tcscat(SuRunExe,UserDesk);
-    PROCESS_INFORMATION pi={0};
     STARTUPINFO si={0};
     si.cb	= sizeof(si);
     TCHAR WinstaDesk[MAX_PATH];
     _stprintf(WinstaDesk,_T("%s\\%s"),WinSta,UserDesk);
     si.lpDesktop = WinstaDesk;
-    if (CreateProcess(NULL,(LPTSTR)SuRunExe,NULL,NULL,FALSE,NORMAL_PRIORITY_CLASS,NULL,NULL,&si,&pi))
-    {
-      CloseHandle(pi.hThread);
+    if (CreateProcess(NULL,(LPTSTR)SuRunExe,NULL,NULL,FALSE,CREATE_SUSPENDED,NULL,NULL,&si,&pi))
       g_WatchDogProcess=pi.hProcess;
-    }
+    else
+      DBGTrace("CreateSafeDesktop error could not create WatchDog Process");
   }else
     DBGTrace2("CreateEvent(%s) failed: %s",WATCHDOG_EVENT_NAME,GetLastErrorNameStatic());
-  CRunOnNewDeskTop* rond=new CRunOnNewDeskTop(WinSta,DeskName,BlurDesk,bFade);
-  if (!rond)
-    return false;
-  if (!rond->IsValid())
+  rond->SwitchToOwnDesk();
+  if (pi.hThread)
   {
-    delete rond;
-    return false;
+    ResumeThread(pi.hThread);
+    CloseHandle(pi.hThread);
   }
-  g_RunOnNewDesk=rond;
-  g_StayOnDesk=new CStayOnDeskTop(DeskName);
   return true;
 }
 
@@ -604,39 +548,31 @@ void DeleteSafeDesktop(bool bFade)
   {
     TerminateProcess(g_WatchDogProcess,0);
     CloseHandle(g_WatchDogProcess);
-    g_WatchDogProcess=0;
   }
+  g_WatchDogProcess=0;
   if (g_RunOnNewDesk && bFade)
     g_RunOnNewDesk->FadeOut();
-  if (g_StayOnDesk)
-    delete g_StayOnDesk;
-  g_StayOnDesk=NULL;
   if (g_RunOnNewDesk)
     delete g_RunOnNewDesk;
   g_RunOnNewDesk=NULL;
-  if(g_StayOnDeskEvent)
-  {
-    CloseHandle(g_StayOnDeskEvent);
-    g_StayOnDeskEvent=NULL;
-  }
   if(g_WatchDogEvent)
-  {
     CloseHandle(g_WatchDogEvent);
-    g_WatchDogEvent=NULL;
-  }
+  g_WatchDogEvent=NULL;
+  if(g_WatchDogThread)
+    WaitForSingleObject(g_WatchDogThread,INFINITE);
+  g_WatchDogThread=NULL;
   if (IsLocalSystem())
     SetUnhandledExceptionFilter(NULL);
 }
 
 //int TestBS()
 //{
-//  CreateSafeDesktop(_T("WinSta0"),true);
+//  CreateSafeDesktop(_T("WinSta0"),_T("Default"),true,true);
 //  DWORD t=GetTickCount();
-//  while (GetTickCount()-t<600)
+//  while (GetTickCount()-t<6000)
 //    g_RunOnNewDesk->m_Screen.MsgLoop();
 //  DeleteSafeDesktop(true);
 //  ExitProcess(0);
 //  return 1;
 //}
-//
-//int tbs=TestBS();
+

@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <tchar.h>
 #include <shlwapi.h>
+#include "Setup.h"
 #include "DBGTrace.h"
 #pragma comment(lib,"shlwapi.lib")
 
@@ -29,7 +30,7 @@ BOOL RequiresAdmin(xml_node& document)
   {
     TCHAR name[4096];
     _tcscpy(name,xn.name());
-    LPTSTR p=_tcschr(name,':');
+    LPTSTR p=_tcschr(name,':'); //p point to name after ":" is any
     if (p)
       p++;
     else
@@ -46,6 +47,12 @@ BOOL RequiresAdmin(xml_node& document)
         xml_node x1 = xn.first_element_by_attribute(name,_T("level"),_T("requireAdministrator"));
         if (!x1.empty())
           bReqAdmin=TRUE;
+        else
+        {
+          x1 = xn.first_element_by_name(name);
+          if (!x1.empty())
+            bReqAdmin=2;
+        }
       }
     }
   }
@@ -54,7 +61,7 @@ BOOL RequiresAdmin(xml_node& document)
 
 BOOL CALLBACK EnumResProc(HMODULE hExe,LPCTSTR rType,LPTSTR rName,LONG_PTR lParam)
 {
-  BOOL bContinue=TRUE;
+  BOOL bAbort=FALSE;
   *((BOOL*)lParam)=FALSE;
   HRSRC hr=FindResource(hExe,rName,RT_MANIFEST);
   DWORD siz=SizeofResource(hExe,hr);
@@ -86,16 +93,18 @@ BOOL CALLBACK EnumResProc(HMODULE hExe,LPCTSTR rType,LPTSTR rName,LONG_PTR lPara
   {
     xml_parser xml; //Construct.
     if (xml.parse(Manifest))
-      bContinue=!RequiresAdmin(xml.document());
+      bAbort=RequiresAdmin(xml.document());
   }
   free(Manifest);
-  if (!bContinue)
-    *((BOOL*)lParam)=TRUE;
-  return bContinue;
+  if (bAbort)
+    *((BOOL*)lParam)=bAbort;
+  return bAbort!=1;
 }
 
 BOOL RequiresAdmin(LPCTSTR FileName)
 {
+  if (!GetTestReqAdmin)
+    return FALSE;
   TCHAR FName[4096];
   _tcscpy(FName,FileName);
   PathRemoveArgs(FName);
@@ -112,7 +121,10 @@ BOOL RequiresAdmin(LPCTSTR FileName)
     {
       bReqAdmin=FALSE;
       InfoDBGTrace1("RequiresAdmin(%s) EnumResourceNames failed",FName);
-    }else if(!bReqAdmin)
+    }else if(bReqAdmin==2)
+      //requestedExecutionLevel present, but Admin not required
+      return FALSE;
+    else if(!bReqAdmin)
     {
       TCHAR s[4096];
       _stprintf(s,_T("%s.%s"),FName,_T("manifest"));
@@ -120,6 +132,9 @@ BOOL RequiresAdmin(LPCTSTR FileName)
       if (xml.parse_file(s))
       {
         bReqAdmin=RequiresAdmin(xml.document());
+        if(bReqAdmin==2)
+          //requestedExecutionLevel present, but Admin not required
+          return FALSE;
         if(bReqAdmin)
           InfoDBGTrace1("RequiresAdmin(%s) external Manifest OK",FName);
       }else
