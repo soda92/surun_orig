@@ -13,6 +13,10 @@
 
 #pragma once
 
+#include <tchar.h>
+#include "helpers.h"
+#include "IsAdmin.h"
+#include "resstr.h"
 #include "SuRunExt/SuRunExt.h"
 
 //////////////////////////////////////////////////////////////////////////////
@@ -25,9 +29,11 @@
 
 #define PASSWKEY      SVCKEY _T("\\Cache")
 #define TIMESKEY      SVCKEY _T("\\Times")
-#define WHTLSTKEY(u)  CBigResStr(_T("%s\\%s"),SVCKEY,u)
-#define USERKEY(u)    CBigResStr(_T("%s\\%s\\Settings"),SVCKEY,u)
+#define WHTLSTKEY(u)  CBigResStr(SVCKEY _T("\\%s"),u)
+#define USERKEY(u)    CBigResStr(SVCKEY _T("\\%s\\Settings"),u)
 
+#define RAPASSKEY(u)  CBigResStr(SVCKEY _T("\\RunAs\\%s\\Cache"),u)
+#define USROPTKEY(u)  CBigResStr(_T("CLSID\\") sGUID _T("\\Options\\%s"),u)
 //////////////////////////////////////////////////////////////////////////////
 // 
 //  Macros for all Settings
@@ -44,6 +50,9 @@
 //blurred user desktop background on secure Desktop
 #define GetBlurDesk       (GetOption(_T("BlurDesktop"),1)!=0)
 #define SetBlurDesk(b)    SetOption(_T("BlurDesktop"),b,1)
+
+#define GetFadeDesk       (GetOption(_T("FadeDesktop"),1)!=0)
+#define SetFadeDesk(b)    SetOption(_T("FadeDesktop"),b,1)
 
 //Minutes to wait until "Is that OK?" is asked again
 #define GetPwTimeOut      min(60,max(0,(int)GetOption(_T("AskTimeOut"),0)))
@@ -74,6 +83,16 @@
                             DelRegKey(HKLM,TIMESKEY); \
                           }
 
+//Show warning if Admin has no password to:
+#define APW_ALL         0
+#define APW_SURUN_ADMIN 1
+#define APW_NR_SR_ADMIN 2
+#define APW_ADMIN       3
+#define APW_NONE        4
+
+#define GetAdminNoPassWarn    GetOption(L"AdminNoPassWarn",2)
+#define SetAdminNoPassWarn(v) SetOption(L"AdminNoPassWarn",v,2)
+
 //////////////////////////////////////////////////////////////////////////////
 //Settings for every user; saved to "HKLM\SECURITY\SuRun\<ComputerName>\<UserName>":
 //////////////////////////////////////////////////////////////////////////////
@@ -81,7 +100,8 @@
 #define SetUsrSetting(u,s,v,d)  if(GetUsrSetting(u,s,d)!=v)\
                                   SetRegInt(HKLM,USERKEY(u),s,v)
 
-#define DelUsrSettings(u)       DelRegKey(HKLM,WHTLSTKEY(u))
+#define DelUsrSettings(u)       DelRegKey(HKLM,WHTLSTKEY(u));\
+                                DelRegKey(HKCR,USROPTKEY(u))
 
 //SuRunner is not allowed to run Setup
 #define GetNoRunSetup(u)      (GetUsrSetting(u,_T("AdminOnlySetup"),0)!=0)
@@ -133,12 +153,71 @@
 //Hook stuff
 #define GetUseIShExHook       (GetShExtSetting(UseIShExHook,1)!=0)
 #define SetUseIShExHook(b)     SetShExtSetting(UseIShExHook,b,1)
-#define GetUseIATHook         (GetShExtSetting(UseIATHook,0)!=0)
-#define SetUseIATHook(b)       SetShExtSetting(UseIATHook,b,0)
+#define GetUseIATHook         (GetShExtSetting(UseIATHook,1)!=0)
+#define SetUseIATHook(b)       SetShExtSetting(UseIATHook,b,1)
 
 //TrayMsg stuff
 #define GetShowAutoRuns       (GetShExtSetting(ShowAutoRuns,1)!=0)
 #define SetShowAutoRuns(b)    SetShExtSetting(ShowAutoRuns,b,1)
+
+//Show App admin status in system tray
+#define TSA_NONE  0 //No TSA
+#define TSA_ALL   1 //TSA for all
+#define TSA_ADMIN 2 //TSA for admins
+#define TSA_TIPS  8 //show balloon tips
+
+#define GetShowTrayAdmin      GetShExtSetting(_T("ShowTrayAdmin"),0)
+#define SetShowTrayAdmin(b)   SetShExtSetting(_T("ShowTrayAdmin"),b,0)
+
+
+//Show App admin status in system tray per user setting
+#define GetUsrOption(u,s,d)   GetRegInt(HKCR,USROPTKEY(u),s,d)
+#define SetUsrOption(u,s,v,d) if(GetUsrOption(u,s,d)!=v)\
+                                SetRegInt(HKCR,USROPTKEY(u),s,v)
+
+#define DelUsrOption(u,s)     RegDelVal(HKCR,USROPTKEY(u),s)
+
+#define GetUserTSA(u)         GetUsrOption(u,_T("ShowTrayAdmin"),-1)
+#define SetUserTSA(u,v)       SetUsrOption(u,_T("ShowTrayAdmin"),v,-1)
+#define DelUserTSA(u)         DelUsrOption(u,_T("ShowTrayAdmin"))
+
+inline bool ShowTray(LPCTSTR u)
+{
+  int utsa=(int)GetUserTSA(u);
+  if (utsa>0)
+    return true;
+  if (utsa==0)
+    return false;
+  switch (GetShowTrayAdmin & (~TSA_TIPS))
+  {
+  case TSA_NONE:
+    return false;
+  case TSA_ALL:
+    return true;
+  case TSA_ADMIN:
+    return IsAdmin()!=0;
+  }
+  return false;
+}
+
+inline bool ShowBalloon(LPCTSTR u)
+{
+  if (GetUserTSA(u)==2)
+    return true;
+  DWORD tsa=GetShowTrayAdmin;
+  if((tsa & TSA_TIPS)==0)
+    return false;
+  switch (tsa & (~TSA_TIPS))
+  {
+  case TSA_NONE:
+    return false;
+  case TSA_ALL:
+    return true;
+  case TSA_ADMIN:
+    return IsAdmin()!=0;
+  }
+  return false;
+}
 
 //#define GetUseRmteThread      (GetShExtSetting(UseRemoteThread,0)!=0)
 //#define SetUseRmteThread(b)    SetShExtSetting(UseRemoteThread,b,0)
@@ -180,6 +259,14 @@
 #define SetEnergy(b)  SetRegistryTreeAccess(_T("MACHINE\\Software\\Microsoft\\")\
                     _T("Windows\\CurrentVersion\\Controls Folder\\PowerCfg"),SURUNNERSGROUP,b)
 
+#define GetSeparateProcess GetRegInt(HKCU,\
+                    _T("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced"),\
+                    _T("SeparateProcess"),0)
+
+#define SetSeparateProcess(b) SetRegInt(HKCU,\
+                    _T("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced"),\
+                    _T("SeparateProcess"),b)
+
 //////////////////////////////////////////////////////////////////////////////
 // 
 //  Password cache
@@ -205,10 +292,11 @@ void UpdLastRunTime(LPTSTR UserName);
 // 
 //////////////////////////////////////////////////////////////////////////////
 
-#define FLAG_DONTASK    1 //SuRun will not ask if App can be executed
-#define FLAG_SHELLEXEC  2 //ShellExecute hook will execute App elevated
-#define FLAG_NORESTRICT 4 //Restricted SuRunner may execute App elevated
-#define FLAG_AUTOCANCEL 8 //SuRun will always answer "cancel"
+#define FLAG_DONTASK    0x01 //SuRun will not ask if App can be executed
+#define FLAG_SHELLEXEC  0x02 //ShellExecute hook will execute App elevated
+#define FLAG_NORESTRICT 0x04 //Restricted SuRunner may execute App elevated
+#define FLAG_AUTOCANCEL 0x08 //SuRun will always answer "cancel"
+#define FLAG_CANCEL_SX  0x10 //SuRun will answer "cancel" on ShellExec
 
 BOOL IsInWhiteList(LPTSTR User,LPTSTR CmdLine,DWORD Flag);
 DWORD GetWhiteListFlags(LPTSTR User,LPTSTR CmdLine,DWORD Default);
@@ -216,6 +304,14 @@ BOOL AddToWhiteList(LPTSTR User,LPTSTR CmdLine,DWORD Flags=0);
 BOOL SetWhiteListFlag(LPTSTR User,LPTSTR CmdLine,DWORD Flag,bool Enable);
 BOOL ToggleWhiteListFlag(LPTSTR User,LPTSTR CmdLine,DWORD Flag);
 BOOL RemoveFromWhiteList(LPTSTR User,LPTSTR CmdLine);
+
+//////////////////////////////////////////////////////////////////////////////
+// 
+//  Registry replace stuff
+// 
+//////////////////////////////////////////////////////////////////////////////
+void ReplaceRunAsWithSuRun(HKEY hKey=HKCR);
+void ReplaceSuRunWithRunAs(HKEY hKey=HKCR);
 
 //////////////////////////////////////////////////////////////////////////////
 // 

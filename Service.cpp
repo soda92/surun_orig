@@ -30,6 +30,7 @@
 #include <ntsecapi.h>
 #include <USERENV.H>
 #include <Psapi.h>
+#include <Tlhelp32.h>
 #include <Wtsapi32.h>
 #include "Setup.h"
 #include "Service.h"
@@ -41,6 +42,7 @@
 #include "UserGroups.h"
 #include "ReqAdmin.h"
 #include "Helpers.h"
+#include "TrayShowAdmin.h"
 #include "DBGTrace.h"
 #include "Resource.h"
 #include "SuRunExt/SuRunExt.h"
@@ -160,7 +162,7 @@ DWORD CheckCliProcess(RUNDATA& rd)
 //  ResumeClient
 // 
 //////////////////////////////////////////////////////////////////////////////
-BOOL ResumeClient(int RetVal) 
+BOOL ResumeClient(int RetVal,bool bWriteRunData=false) 
 {
   HANDLE hProcess=OpenProcess(PROCESS_ALL_ACCESS,FALSE,g_RunData.CliProcessId);
   if (!hProcess)
@@ -175,12 +177,15 @@ BOOL ResumeClient(int RetVal)
     DBGTrace1("WriteProcessMemory failed: %s",GetLastErrorNameStatic());
     return CloseHandle(hProcess),FALSE;
   }
-  CloseHandle(hProcess);
   if (sizeof(int)!=n)
+    DBGTrace2("WriteProcessMemory invalid size %d != %d ",sizeof(int),n);
+  if(bWriteRunData)
   {
-    DBGTrace2("WriteProcessMemory invalid size %d != %d ",PWLEN,n);
-    return FALSE;
+    WriteProcessMemory(hProcess,&g_RunData,&g_RunData,sizeof(RUNDATA),&n);
+    if (sizeof(RUNDATA)!=n)
+      DBGTrace2("WriteProcessMemory invalid size %d != %d ",sizeof(RUNDATA),n);
   }
+  CloseHandle(hProcess);
   return TRUE;
 }
 
@@ -216,6 +221,85 @@ VOID WINAPI SvcCtrlHndlr(DWORD dwControl)
   } 
   if (g_hSS!=(SERVICE_STATUS_HANDLE)0) 
     SetServiceStatus(g_hSS,&g_ss);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// 
+//  GetProcessUserToken
+// 
+//////////////////////////////////////////////////////////////////////////////
+HANDLE GetProcessUserToken(DWORD ProcId)
+{
+  HANDLE hToken=NULL;
+  EnablePrivilege(SE_DEBUG_NAME);
+  HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS,TRUE,ProcId);
+  if (!hProc)
+    return hToken;
+  // Open impersonation token for Shell process
+  OpenProcessToken(hProc,TOKEN_IMPERSONATE|TOKEN_QUERY|TOKEN_DUPLICATE
+    |TOKEN_ASSIGN_PRIMARY,&hToken);
+  CloseHandle(hProc);
+  if(!hToken)
+    return hToken;
+  HANDLE hUser=0;
+  DuplicateTokenEx(hToken,MAXIMUM_ALLOWED,NULL,SecurityIdentification,
+    TokenPrimary,&hUser); 
+  return CloseHandle(hToken),hUser;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// 
+//  ShowTrayWarning
+// 
+//////////////////////////////////////////////////////////////////////////////
+void ShowTrayWarning(LPCTSTR Text,int IconId) 
+{
+  TCHAR cmd[4096]={0};
+  GetSystemWindowsDirectory(cmd,4096);
+  PathAppend(cmd,L"SuRun.exe");
+  HANDLE hUser=GetProcessUserToken(g_RunData.CliProcessId);
+  PROCESS_INFORMATION pi={0};
+  TCHAR UserName[MAX_PATH]={0};
+  PROFILEINFO ProfInf = {sizeof(ProfInf),0,UserName};
+  if(GetTokenUserName(hUser,UserName) && LoadUserProfile(hUser,&ProfInf))
+  {
+    void* Env=0;
+    if (CreateEnvironmentBlock(&Env,hUser,FALSE))
+    {
+      STARTUPINFO si={0};
+      si.cb	= sizeof(si);
+      //Do not inherit Desktop from calling process, use Tokens Desktop
+      TCHAR WinstaDesk[MAX_PATH];
+      _stprintf(WinstaDesk,_T("%s\\%s"),g_RunData.WinSta,g_RunData.Desk);
+      si.lpDesktop = WinstaDesk;
+      //CreateProcessAsUser will only work from an NT System Account since the
+      //Privilege SE_ASSIGNPRIMARYTOKEN_NAME is not present elsewhere
+      EnablePrivilege(SE_ASSIGNPRIMARYTOKEN_NAME);
+      EnablePrivilege(SE_INCREASE_QUOTA_NAME);
+      //Show ToolTip "<Program> is running elevated"...
+      if (CreateProcessAsUser(hUser,NULL,cmd,NULL,NULL,FALSE,
+        CREATE_SUSPENDED|CREATE_UNICODE_ENVIRONMENT|DETACHED_PROCESS,Env,NULL,&si,&pi))
+      {
+        //Tell SuRun to Say something:
+        RUNDATA rd=g_RunData;
+        rd.CliProcessId=0;
+        rd.CliThreadId=pi.dwThreadId;
+        rd.RetPtr=0;
+        rd.RetPID=0;
+        rd.IconId=IconId;
+        _tcscpy(rd.cmdLine,Text);
+        DWORD_PTR n=0;
+        if (!WriteProcessMemory(pi.hProcess,&g_RunData,&rd,sizeof(RUNDATA),&n))
+          TerminateProcess(pi.hProcess,0);
+        ResumeThread(pi.hThread);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+      }
+      DestroyEnvironmentBlock(Env);
+    }
+    UnloadUserProfile(hUser,ProfInf.hProfile);
+  }
+  CloseHandle(hUser);
 }
 
 VOID WINAPI ServiceMain(DWORD argc,LPTSTR *argv)
@@ -261,48 +345,115 @@ VOID WINAPI ServiceMain(DWORD argc,LPTSTR *argv)
       ReadFile(g_hPipe,&rd,sizeof(rd),&nRead,0); 
       //Disconnect client
       DisconnectNamedPipe(g_hPipe);
-      if(CheckCliProcess(rd)==2)
+      if ((nRead==sizeof(RUNDATA)) && (CheckCliProcess(rd)==2))
       {
-        DWORD wlf=GetWhiteListFlags(g_RunData.UserName,g_RunData.cmdLine,0);
-        //check if the requested App is Flagged with AutoCancel
-        if (wlf&FLAG_AUTOCANCEL)
+        if (g_RunData.bTrayShowAdmin)
         {
-          //Access denied!
-          ResumeClient((g_RunData.bShlExHook)?RETVAL_SX_NOTINLIST:RETVAL_CANCELLED);
-          DBGTrace2("ShellExecute AutoCancel WhiteList MATCH: %s: %s",g_RunData.UserName,g_RunData.cmdLine)
+          GetProcessUserName(g_RunData.CurProcId,g_RunData.CurUserName);
+          HANDLE h=OpenProcess(PROCESS_QUERY_INFORMATION,FALSE,g_RunData.CurProcId);
+          if (h)
+          {
+            HANDLE hTok=0;
+            if (OpenProcessToken(h,TOKEN_DUPLICATE,&hTok))
+            {
+              g_RunData.CurUserIsadmin=IsAdmin(hTok);
+              CloseHandle(hTok);
+            }
+            CloseHandle(h);
+          }
+          ResumeClient(RETVAL_OK,true);
           continue;
         }
-        //check if the requested App is in the ShellExecHook-Runlist
-        if (g_RunData.bShlExHook)
+        if (_tcsicmp(g_RunData.cmdLine,_T("/CHECKFOREMPTYADMINPASSWORDS"))==0)
         {
-          //Only SuRunners will can use the hooks
-          if (!IsInSuRunners(g_RunData.UserName))
+          switch(GetAdminNoPassWarn)
           {
-            ResumeClient(RETVAL_SX_NOTINLIST);
+          case APW_ALL:
+            break;
+          case APW_NR_SR_ADMIN:
+            if (IsInSuRunners(g_RunData.UserName)
+              &&(!GetRestrictApps(g_RunData.UserName))
+              &&(!GetNoRunSetup(g_RunData.UserName)))
+              break;
+            goto ChkAdmin;
+          case APW_SURUN_ADMIN:
+            if (IsInSuRunners(g_RunData.UserName))
+              break;
+          case APW_ADMIN:
+ChkAdmin:
+            if (g_CliIsAdmin)
+              break;
+          case APW_NONE:
+          default:
+            ResumeClient(RETVAL_OK);
             continue;
           }
-          if ((!(wlf&FLAG_SHELLEXEC))
-            //check for requireAdministrator Manifest and
-            //file names *setup*;*install*;*update*;*.msi;*.msc
-            && (!RequiresAdmin(g_RunData.cmdLine)))
-          {
-            ResumeClient(RETVAL_SX_NOTINLIST);
-            DBGTrace2("ShellExecute WhiteList MisMatch: %s: %s",g_RunData.UserName,g_RunData.cmdLine)
-            continue;
-          }
-          DBGTrace2("ShellExecute WhiteList Match: %s: %s",g_RunData.UserName,g_RunData.cmdLine)
+          USERLIST u;
+          u.SetGroupUsers(DOMAIN_ALIAS_RID_ADMINS,false);
+          TCHAR un[4096]={0};
+          for (int i=0;i<u.GetCount();i++)
+            if (PasswordOK(u.GetUserName(i),0,TRUE))
+            {
+              DBGTrace1("Warning: %s is an empty password admin",u.GetUserName(i));
+              _tcscat(un,u.GetUserName(i));
+              _tcscat(un,_T("\n"));
+            }
+          if(un[0])
+            ShowTrayWarning(CBigResStr(IDS_EMPTYPASS,un),IDI_SHIELD2);
+          ResumeClient(RETVAL_OK);
+          continue;
         }
-        if  (GetRestrictApps(g_RunData.UserName) 
-         && (_tcsicmp(g_RunData.cmdLine,_T("/SETUP"))!=0))
+        if (!g_RunData.bRunAs)
         {
-          if (!(wlf&FLAG_NORESTRICT))
+          DWORD wlf=GetWhiteListFlags(g_RunData.UserName,g_RunData.cmdLine,0);
+          //check if the requested App is Flagged with AutoCancel
+          if (wlf&FLAG_AUTOCANCEL)
           {
-            ResumeClient(g_RunData.bShlExHook?RETVAL_SX_NOTINLIST:RETVAL_RESTRICT);
-            DBGTrace2("Restriction WhiteList MisMatch: %s: %s",g_RunData.UserName,g_RunData.cmdLine)
+            //Access denied!
+            ResumeClient((g_RunData.bShlExHook)?RETVAL_SX_NOTINLIST:RETVAL_CANCELLED);
+            //DBGTrace2("ShellExecute AutoCancel WhiteList MATCH: %s: %s",g_RunData.UserName,g_RunData.cmdLine)
             continue;
           }
-          DBGTrace2("Restriction WhiteList Match: %s: %s",g_RunData.UserName,g_RunData.cmdLine)
-        }
+          //check if the requested App is in the ShellExecHook-Runlist
+          if (g_RunData.bShlExHook)
+          {
+            //check if the requested App is Flagged with AutoCancel
+            if (wlf&FLAG_CANCEL_SX)
+            {
+              //Access denied!
+              ResumeClient((g_RunData.bShlExHook)?RETVAL_SX_NOTINLIST:RETVAL_CANCELLED);
+              //DBGTrace2("ShellExecute AutoCancel WhiteList MATCH: %s: %s",g_RunData.UserName,g_RunData.cmdLine);
+              continue;
+            }
+            //Only SuRunners will can use the hooks
+            if (!IsInSuRunners(g_RunData.UserName))
+            {
+              ResumeClient(RETVAL_SX_NOTINLIST);
+              continue;
+            }
+            if ((!(wlf&FLAG_SHELLEXEC))
+              //check for requireAdministrator Manifest and
+              //file names *setup*;*install*;*update*;*.msi;*.msc
+              && (!RequiresAdmin(g_RunData.cmdLine)))
+            {
+              ResumeClient(RETVAL_SX_NOTINLIST);
+              //DBGTrace2("ShellExecute WhiteList MisMatch: %s: %s",g_RunData.UserName,g_RunData.cmdLine)
+              continue;
+            }
+            //DBGTrace2("ShellExecute WhiteList Match: %s: %s",g_RunData.UserName,g_RunData.cmdLine)
+          }
+          if  (GetRestrictApps(g_RunData.UserName) 
+            && (_tcsicmp(g_RunData.cmdLine,_T("/SETUP"))!=0))
+          {
+            if (!(wlf&FLAG_NORESTRICT))
+            {
+              ResumeClient(g_RunData.bShlExHook?RETVAL_SX_NOTINLIST:RETVAL_RESTRICT);
+              //DBGTrace2("Restriction WhiteList MisMatch: %s: %s",g_RunData.UserName,g_RunData.cmdLine)
+              continue;
+            }
+            //DBGTrace2("Restriction WhiteList Match: %s: %s",g_RunData.UserName,g_RunData.cmdLine)
+          }
+        }//if (!g_RunData.bRunAs)
         //Process Check succeded, now start this exe in the calling processes
         //Terminal server session to get SwitchDesktop working:
         HANDLE hProc=0;
@@ -405,6 +556,88 @@ void KillProcess(DWORD PID)
 
 //////////////////////////////////////////////////////////////////////////////
 // 
+//  BeautifyCmdLine: replace shell namespace object names
+// 
+//////////////////////////////////////////////////////////////////////////////
+LPCTSTR GetShellName(LPCTSTR clsid,LPCTSTR DefName)
+{
+  static TCHAR s[MAX_PATH];
+  zero(s);
+  GetRegStr(HKCR,CResStr(L"CLSID\\%s",clsid),L"LocalizedString",s,MAX_PATH);
+  if(s[0]=='@')
+  {
+    LPTSTR c=_tcsrchr(s,',');
+    if(c)
+    {
+      *c=0;
+      c++;
+      int i=_ttoi(c);
+      HINSTANCE h=LoadLibrary(&s[1]);
+      LoadString(h,(DWORD)-i,s,MAX_PATH);
+      FreeLibrary(h);
+    }
+  }
+  if (!s[0])
+    GetRegStr(HKCR,CResStr(L"CLSID\\%s",clsid),L"",s,MAX_PATH);
+  if (!s[0])
+    _tcscpy(s,DefName);
+  return s;
+}
+
+LPCTSTR BeautifyCmdLine(LPTSTR cmd)
+{
+  typedef struct {
+    int nId;
+    LPCTSTR clsid;
+  }ShName;
+  ShName shn[]=
+  {
+    {IDS_SHNAME1,_T("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}")},
+    {IDS_SHNAME2,_T("::{208D2C60-3AEA-1069-A2D7-08002B30309D}")},
+    {IDS_SHNAME3,_T("::{7007ACC7-3202-11D1-AAD2-00805FC1270E}")},
+    {IDS_SHNAME4,_T("::{21EC2020-3AEA-1069-A2DD-08002B30309D}")},
+    {IDS_SHNAME5,_T("::{645FF040-5081-101B-9F08-00AA002F954E}")},
+    {IDS_SHNAME6,_T("::{D20EA4E1-3957-11d2-A40B-0C5020524152}")},
+    {IDS_SHNAME7,_T("::{D20EA4E1-3957-11d2-A40B-0C5020524153}")},
+    {IDS_SHNAME8,_T("::{450D8FBA-AD25-11D0-98A8-0800361B1103}")}
+  };
+  static TCHAR c1[4096];
+  zero(c1);
+  _tcscpy(c1,cmd);
+  bool bOk=false;
+  for (int i=0;i<countof(shn);i++)
+  {
+    LPTSTR c=_tcsstr(c1,shn[i].clsid);
+    if(c)
+    {
+      bOk=TRUE;
+      *c=0;
+      TCHAR c2[4096];
+      _stprintf(c2,L"%s%s%s",
+        c1,
+        GetShellName(&shn[i].clsid[2],CResStr(shn[i].nId)),
+        &c[_tcslen(shn[i].clsid)]);
+      _tcscpy(c1,c2);
+    }
+  }
+  if (bOk)
+    _tcscpy(c1,CBigResStr(IDS_BEAUTIFIED,cmd,c1));
+  return c1;
+}
+
+//int tx()
+//{
+//  TCHAR cmd[4096]={0};
+//  _tcscpy(cmd,L"C:\\Windows\\Exploer.exe /e, ::{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\::{208D2C60-3AEA-1069-A2D7-08002B30309D}\\::{21EC2020-3AEA-1069-A2DD-08002B30309D}\\::{871C5380-42A0-1069-A2EA-08002B30309D}");
+//  DBGTrace1("%s",BeautifyCmdLine(cmd));
+//
+//  ::ExitProcess(0);
+//  return 0;
+//}
+//int xtx=tx();
+
+//////////////////////////////////////////////////////////////////////////////
+// 
 //  PrepareSuRun: Show Password/Permission Dialog on secure Desktop,
 // 
 //////////////////////////////////////////////////////////////////////////////
@@ -414,10 +647,10 @@ DWORD PrepareSuRun()
   //Do we have a Password for this user?
   if (GetSavePW &&(!PasswordExpired(g_RunData.UserName)))
       LoadPassword(g_RunData.UserName,g_RunPwd,sizeof(g_RunPwd));
-  BOOL PwOk=PasswordOK(g_RunData.UserName,g_RunPwd);
+  BOOL PwOk=PasswordOK(g_RunData.UserName,g_RunPwd,true);
 #ifdef _DEBUG
-  if (!PwOk)
-    DBGTrace2("Password (%s) for %s is NOT ok!",g_RunPwd,g_RunData.UserName);
+//  if (!PwOk)
+//    DBGTrace2("Password (%s) for %s is NOT ok!",g_RunPwd,g_RunData.UserName);
 #endif _DEBUG
   BOOL bIsSuRunner=IsInSuRunners(g_RunData.UserName);
   if ((!PwOk)||(!bIsSuRunner))
@@ -434,7 +667,7 @@ DWORD PrepareSuRun()
   if (g_CliIsAdmin || IsInWhiteList(g_RunData.UserName,g_RunData.cmdLine,FLAG_DONTASK))
     return UpdLastRunTime(g_RunData.UserName),RETVAL_OK;
   //Create the new desktop
-  if (CreateSafeDesktop(g_RunData.WinSta,GetBlurDesk))
+  if (CreateSafeDesktop(g_RunData.WinSta,GetBlurDesk,GetFadeDesk))
   {
     __try
     {
@@ -448,29 +681,50 @@ DWORD PrepareSuRun()
       DWORD l=0;
       if (!PwOk)
       {
-        l=LogonCurrentUser(g_RunData.UserName,g_RunPwd,f,g_RunData.bShlExHook?IDS_ASKAUTO:IDS_ASKOK,g_RunData.cmdLine);
+        l=LogonCurrentUser(g_RunData.UserName,g_RunPwd,f,g_RunData.bShlExHook?IDS_ASKAUTO:IDS_ASKOK,
+            BeautifyCmdLine(g_RunData.cmdLine));
         if (GetSavePW && (l&1))
           SavePassword(g_RunData.UserName,g_RunPwd);
       }else
-        l=AskCurrentUserOk(g_RunData.UserName,f,g_RunData.bShlExHook?IDS_ASKAUTO:IDS_ASKOK,g_RunData.cmdLine);
-      DeleteSafeDesktop();
+        l=AskCurrentUserOk(g_RunData.UserName,f,g_RunData.bShlExHook?IDS_ASKAUTO:IDS_ASKOK,
+            BeautifyCmdLine(g_RunData.cmdLine));
+      DeleteSafeDesktop(GetFadeDesk && ((l&1)==0));
       if((l&1)==0)
       {
-        SetWhiteListFlag(g_RunData.UserName,g_RunData.cmdLine,FLAG_AUTOCANCEL,(l&2)!=0);
-        if((l&2)!=0)
-          SetWhiteListFlag(g_RunData.UserName,g_RunData.cmdLine,FLAG_DONTASK,0);
+        if (!GetNoRunSetup(g_RunData.UserName))
+        {
+          //Cancel:
+          if(g_RunData.bShlExHook)
+          {
+            //ShellExecHook:
+            SetWhiteListFlag(g_RunData.UserName,g_RunData.cmdLine,FLAG_CANCEL_SX,(l&2)!=0);
+            if((l&2)!=0)
+              SetWhiteListFlag(g_RunData.UserName,g_RunData.cmdLine,FLAG_SHELLEXEC,0);
+          }else
+          {
+            //SuRun cmdline:
+            SetWhiteListFlag(g_RunData.UserName,g_RunData.cmdLine,FLAG_AUTOCANCEL,(l&2)!=0);
+            if((l&2)!=0)
+              SetWhiteListFlag(g_RunData.UserName,g_RunData.cmdLine,FLAG_DONTASK,0);
+          }
+        }
         return RETVAL_CANCELLED;
       }
-      SetWhiteListFlag(g_RunData.UserName,g_RunData.cmdLine,FLAG_DONTASK,(l&2)!=0);
-      if((l&2)!=0)
-        SetWhiteListFlag(g_RunData.UserName,g_RunData.cmdLine,FLAG_AUTOCANCEL,0);
-      SetWhiteListFlag(g_RunData.UserName,g_RunData.cmdLine,FLAG_SHELLEXEC,(l&4)!=0);
+      //Ok:
+      if (!GetNoRunSetup(g_RunData.UserName))
+      {
+        SetWhiteListFlag(g_RunData.UserName,g_RunData.cmdLine,FLAG_DONTASK,(l&2)!=0);
+        if((l&2)!=0)
+          SetWhiteListFlag(g_RunData.UserName,g_RunData.cmdLine,
+          g_RunData.bShlExHook?FLAG_CANCEL_SX:FLAG_AUTOCANCEL,0);
+        SetWhiteListFlag(g_RunData.UserName,g_RunData.cmdLine,FLAG_SHELLEXEC,(l&4)!=0);
+      }
       return UpdLastRunTime(g_RunData.UserName),RETVAL_OK;
     }__except(1)
     {
       DBGTrace("FATAL: Exception in PrepareSuRun()");
     }
-    DeleteSafeDesktop();
+    DeleteSafeDesktop(false);
   }
   SafeMsgBox(0,CBigResStr(IDS_NODESK),CResStr(IDS_APPNAME),MB_ICONSTOP|MB_SERVICE_NOTIFICATION);
   return RETVAL_ACCESSDENIED;
@@ -509,11 +763,18 @@ DWORD CheckServiceStatus(LPCTSTR ServiceName=SvcName)
 
 BOOL Setup(LPCTSTR WinStaName)
 {
+  //check if user name may not run setup:
+  if (GetNoRunSetup(g_RunData.UserName))
+  {
+    if(!LogonAdmin(IDS_NOADMIN2,g_RunData.UserName))
+      return FALSE;
+    return RunSetup();
+  }
   //only Admins and SuRunners may setup SuRun
   if (g_CliIsAdmin)
     return RunSetup();
-  if (GetNoRunSetup(g_RunData.UserName) 
-    ||(GetNoConvUser && (!IsInSuRunners(g_RunData.UserName))))
+  //If no users should become SuRunners, ask for Admin credentials
+  if (GetNoConvUser && (!IsInSuRunners(g_RunData.UserName)))
   {
     if(!LogonAdmin(IDS_NOADMIN2,g_RunData.UserName))
       return FALSE;
@@ -522,30 +783,6 @@ BOOL Setup(LPCTSTR WinStaName)
   if (BeOrBecomeSuRunner(g_RunData.UserName,TRUE,0))
     return RunSetup();
   return false;
-}
-
-//////////////////////////////////////////////////////////////////////////////
-// 
-//  GetCliUserToken get User Token for g_RunData.CliProcessId
-// 
-//////////////////////////////////////////////////////////////////////////////
-HANDLE GetCliUserToken()
-{
-  HANDLE hToken=NULL;
-  EnablePrivilege(SE_DEBUG_NAME);
-  HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS,TRUE,g_RunData.CliProcessId);
-  if (!hProc)
-    return hToken;
-  // Open impersonation token for Shell process
-  OpenProcessToken(hProc,TOKEN_IMPERSONATE|TOKEN_QUERY|TOKEN_DUPLICATE
-    |TOKEN_ASSIGN_PRIMARY,&hToken);
-  CloseHandle(hProc);
-  if(!hToken)
-    return hToken;
-  HANDLE hUser=0;
-  DuplicateTokenEx(hToken,MAXIMUM_ALLOWED,NULL,SecurityIdentification,
-    TokenPrimary,&hUser); 
-  return CloseHandle(hToken),hUser;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -560,7 +797,7 @@ DWORD StartAdminProcessTrampoline()
   PathAppend(cmd,L"SuRun.exe");
   PathQuoteSpaces(cmd);
   DWORD RetVal=RETVAL_ACCESSDENIED;
-  HANDLE hUser=GetCliUserToken();
+  HANDLE hUser=GetProcessUserToken(g_RunData.CliProcessId);
   PROCESS_INFORMATION pi={0};
 #ifndef _DEBUG_SVC
   TCHAR UserName[MAX_PATH]={0};
@@ -612,21 +849,27 @@ DWORD StartAdminProcessTrampoline()
           TerminateProcess(pi.hProcess,0);
         //Enable use of empty passwords for network logon
         BOOL bEmptyPWAllowed=FALSE;
-        if (g_RunPwd[0]==0)
+        if (!g_RunData.bRunAs)
         {
-          bEmptyPWAllowed=EmptyPWAllowed;
-          AllowEmptyPW(TRUE);
+          if (g_RunPwd[0]==0)
+          {
+            bEmptyPWAllowed=EmptyPWAllowed;
+            AllowEmptyPW(TRUE);
+          }
+          //Add user to admins group
+          AlterGroupMember(DOMAIN_ALIAS_RID_ADMINS,g_RunData.UserName,1);
         }
-        //Add user to admins group
-        AlterGroupMember(DOMAIN_ALIAS_RID_ADMINS,g_RunData.UserName,1);
         ResumeThread(pi.hThread);
         CloseHandle(pi.hThread);
         WaitForSingleObject(pi.hProcess,INFINITE);
-        //Remove user from Administrators group
-        AlterGroupMember(DOMAIN_ALIAS_RID_ADMINS,g_RunData.UserName,0);
-        //Reset status of "use of empty passwords for network logon"
-        if (g_RunPwd[0]==0)
-          AllowEmptyPW(bEmptyPWAllowed);
+        if (!g_RunData.bRunAs)
+        {
+          //Remove user from Administrators group
+          AlterGroupMember(DOMAIN_ALIAS_RID_ADMINS,g_RunData.UserName,0);
+          //Reset status of "use of empty passwords for network logon"
+          if (g_RunPwd[0]==0)
+            AllowEmptyPW(bEmptyPWAllowed);
+        }
         //Clear Password
         zero(g_RunPwd);
         GetExitCodeProcess(pi.hProcess,&RetVal);
@@ -642,6 +885,9 @@ DWORD StartAdminProcessTrampoline()
             rd.CliThreadId=pi.dwThreadId;
             rd.RetPtr=0;
             rd.RetPID=0;
+            rd.IconId=IDI_SHIELD;
+            rd.TimeOut=20000;
+            _tcscpy(rd.cmdLine,CBigResStr(IDS_STARTED,BeautifyCmdLine(g_RunData.cmdLine)));
             if (!WriteProcessMemory(pi.hProcess,&g_RunData,&rd,sizeof(RUNDATA),&n))
               TerminateProcess(pi.hProcess,0);
             ResumeThread(pi.hThread);
@@ -668,10 +914,10 @@ DWORD StartAdminProcessTrampoline()
   return RetVal;
 }
 
-DWORD DirectStartUserProcess() 
+DWORD DirectStartUserProcess(DWORD ProcId,LPTSTR cmd) 
 {
   DWORD RetVal=RETVAL_ACCESSDENIED;
-  HANDLE hUser=GetCliUserToken();
+  HANDLE hUser=GetProcessUserToken(ProcId);
   TCHAR UserName[MAX_PATH]={0};
   PROFILEINFO ProfInf = {sizeof(ProfInf),0,UserName};
   if(GetTokenUserName(hUser,UserName) && LoadUserProfile(hUser,&ProfInf))
@@ -690,7 +936,7 @@ DWORD DirectStartUserProcess()
       //Privilege SE_ASSIGNPRIMARYTOKEN_NAME is not present elsewhere
       EnablePrivilege(SE_ASSIGNPRIMARYTOKEN_NAME);
       EnablePrivilege(SE_INCREASE_QUOTA_NAME);
-      if (CreateProcessAsUser(hUser,NULL,g_RunData.cmdLine,NULL,NULL,FALSE,
+      if (CreateProcessAsUser(hUser,NULL,cmd,NULL,NULL,FALSE,
             CREATE_UNICODE_ENVIRONMENT,Env,NULL,&si,&pi))
       {
         CloseHandle(pi.hThread);
@@ -707,11 +953,11 @@ DWORD DirectStartUserProcess()
             SIZE_T n;
             if (!WriteProcessMemory(hProcess,(LPVOID)g_RunData.RetPtr,&pi,sizeof(PROCESS_INFORMATION),&n))
               DBGTrace2("AutoSuRun(%s) WriteProcessMemory failed: %s",
-              g_RunData.cmdLine,GetLastErrorNameStatic());
+              cmd,GetLastErrorNameStatic());
             CloseHandle(hProcess);
           }else
             DBGTrace2("AutoSuRun(%s) OpenProcess failed: %s",
-            g_RunData.cmdLine,GetLastErrorNameStatic());
+            cmd,GetLastErrorNameStatic());
         }
       }else
         DBGTrace1("CreateProcess failed: %s",GetLastErrorNameStatic());
@@ -721,6 +967,59 @@ DWORD DirectStartUserProcess()
   }
   CloseHandle(hUser);
   return RetVal;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// 
+//  GetShellProcessId
+// 
+//////////////////////////////////////////////////////////////////////////////
+DWORD GetShellProcessId(DWORD SessionID)
+{
+  //Get the Shells Name
+  TCHAR Shell[MAX_PATH];
+  if (!GetRegStr(HKEY_LOCAL_MACHINE,_T("SOFTWARE\\Microsoft\\Windows NT\\")
+    _T("CurrentVersion\\Winlogon"),_T("Shell"),Shell,MAX_PATH))
+    return 0;
+  PathRemoveArgs(Shell);
+  PathStripPath(Shell);
+  //Terminal Services:
+  DWORD nProcesses=0;
+  WTS_PROCESS_INFO* pwtspi=0;
+  WTSEnumerateProcesses(WTS_CURRENT_SERVER_HANDLE,0,1,&pwtspi,&nProcesses);
+  for (DWORD Process=0;Process<nProcesses;Process++) 
+  {
+    if (pwtspi[Process].SessionId!=g_RunData.SessionID)
+      continue;
+    TCHAR PName[MAX_PATH]={0};
+    _tcscpy(PName,pwtspi[Process].pProcessName);
+    PathStripPath(PName);
+    if (_tcsicmp(Shell,PName)==0)
+      return WTSFreeMemory(pwtspi), pwtspi[Process].ProcessId;
+  }
+  WTSFreeMemory(pwtspi);
+  //ToolHelp
+  HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0);
+  if (hSnap==INVALID_HANDLE_VALUE)
+    return 0; 
+  DWORD dwRet=0;
+  PROCESSENTRY32 pe={0};
+  pe.dwSize = sizeof(PROCESSENTRY32);
+  bool bFirst=true;
+  while((bFirst?Process32First(hSnap,&pe):Process32Next(hSnap,&pe)))
+  {
+    bFirst=false;
+    PathStripPath(pe.szExeFile);
+    if(_tcsicmp(Shell,pe.szExeFile)!=0) 
+      continue;
+    ULONG s=-2;
+    if ((!ProcessIdToSessionId(pe.th32ProcessID,&s))||(s!=SessionID))
+      continue;
+    dwRet=pe.th32ProcessID;
+    break;
+  }
+  CloseHandle(hSnap);
+  return dwRet;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -741,43 +1040,80 @@ void SuRun(DWORD ProcessID)
   RD.CliProcessId=ProcessID;
   if(CheckCliProcess(RD)!=1)
     return;
-  //Setup?
-  if (_tcsicmp(g_RunData.cmdLine,_T("/SETUP"))==0)
+  DWORD RetVal=RETVAL_ACCESSDENIED;
+  //RunAs...
+  if (g_RunData.bRunAs)
   {
-    //Create the new desktop
-    ResumeClient(RETVAL_OK);
-    if (CreateSafeDesktop(g_RunData.WinSta,GetBlurDesk))
+    if (CreateSafeDesktop(g_RunData.WinSta,GetBlurDesk,GetFadeDesk))
     {
-      __try
+      if (!RunAsLogon(g_RunData.UserName,g_RunPwd,IDS_ASKRUNAS,BeautifyCmdLine(g_RunData.cmdLine)))
       {
-        Setup(g_RunData.WinSta);
-      }__except(1)
-      {
-        DBGTrace("FATAL: Exception in Setup()");
+        DeleteSafeDesktop(GetFadeDesk);
+        ResumeClient(RETVAL_CANCELLED);
+        return;
       }
-      DeleteSafeDesktop();
-    }else
-      SafeMsgBox(0,CBigResStr(IDS_NODESK),CResStr(IDS_APPNAME),MB_ICONSTOP|MB_SERVICE_NOTIFICATION);
-    return;
-  }
-  KillProcess(g_RunData.KillPID);
-  if (g_CliIsAdmin && (GetNoConvAdmin||GetNoConvUser))
+      RetVal=RETVAL_OK;
+      DeleteSafeDesktop(false);
+    }
+  }else //if (!g_RunData.bRunAs)
   {
-    //Just start the client process!
-    ResumeClient(DirectStartUserProcess());
-    return;
-  }
-  //Start execution
-  DWORD RetVal=PrepareSuRun();
-  if (RetVal!=RETVAL_OK)
-  {
-    if ( g_RunData.bShlExHook
-      &&(!IsInWhiteList(g_RunData.UserName,g_RunData.cmdLine,FLAG_SHELLEXEC)))
-      ResumeClient(RETVAL_SX_NOTINLIST);//let ShellExecute start the process!
-    else
-      ResumeClient(RetVal);
-    return;
-  }
+    //Setup?
+    if (_tcsicmp(g_RunData.cmdLine,_T("/SETUP"))==0)
+    {
+      //Create the new desktop
+      ResumeClient(RETVAL_OK);
+      HANDLE hTok=0;
+      if (g_RunData.bNoSafeDesk)
+      {
+        OpenProcessToken(GetCurrentProcess(),TOKEN_ALL_ACCESS,&hTok);
+        SetAccessToWinDesk(hTok,g_RunData.WinSta,g_RunData.Desk,true);
+        SetProcWinStaDesk(g_RunData.WinSta,g_RunData.Desk);
+      }
+      if (g_RunData.bNoSafeDesk || CreateSafeDesktop(g_RunData.WinSta,GetBlurDesk,GetFadeDesk))
+      {
+        __try
+        {
+          Setup(g_RunData.WinSta);
+        }__except(1)
+        {
+          DBGTrace("FATAL: Exception in Setup()");
+        }
+        DeleteSafeDesktop(GetFadeDesk);
+//        //Start Sysmenuhook...just in case
+//        TCHAR cmd[4096]={0};
+//        GetSystemWindowsDirectory(cmd,4096);
+//        PathAppend(cmd,L"SuRun.exe");
+//        PathQuoteSpaces(cmd);
+//        _tcscat(cmd,L" /SYSMENUHOOK");
+//        DirectStartUserProcess(GetShellProcessId(g_RunData.SessionID),cmd);
+      }else
+        SafeMsgBox(0,CBigResStr(IDS_NODESK),CResStr(IDS_APPNAME),MB_ICONSTOP|MB_SERVICE_NOTIFICATION);
+      if(g_RunData.bNoSafeDesk)
+      {
+        SetAccessToWinDesk(hTok,g_RunData.WinSta,g_RunData.Desk,false);
+        CloseHandle(hTok);
+      }
+      return;
+    }
+    KillProcess(g_RunData.KillPID);
+    if (g_CliIsAdmin && (GetNoConvAdmin||GetNoConvUser))
+    {
+      //Just start the client process!
+      ResumeClient(DirectStartUserProcess(g_RunData.CliProcessId,g_RunData.cmdLine));
+      return;
+    }
+    //Start execution
+    RetVal=PrepareSuRun();
+    if (RetVal!=RETVAL_OK)
+    {
+      if ( g_RunData.bShlExHook
+        &&(!IsInWhiteList(g_RunData.UserName,g_RunData.cmdLine,FLAG_SHELLEXEC)))
+        ResumeClient(RETVAL_SX_NOTINLIST);//let ShellExecute start the process!
+      else
+        ResumeClient(RetVal);
+      return;
+    }
+  }//(g_RunData.bRunAs)
   //Secondary Logon service is required by CreateProcessWithLogonW
   if(CheckServiceStatus(_T("seclogon"))!=SERVICE_RUNNING)
   {
@@ -915,6 +1251,8 @@ void InstallRegistry()
   GetSystemWindowsDirectory(SuRunExe,4096);
   PathAppend(SuRunExe,L"SuRunExt.dll");
   SetRegStr(HKLM,L"Software\\Microsoft\\Windows\\CurrentVersion\\Control Panel\\Cpls",L"SuRunCpl",SuRunExe);
+  //Add SuRun CPL to "Performance and Maintenance"
+  SetRegInt(HKLM,L"Software\\Microsoft\\Windows\\CurrentVersion\\Control Panel\\Extended Properties\\{305CA226-D286-468e-B848-2B2E8E697B74} 2",SuRunExe,5);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -953,6 +1291,10 @@ void RemoveRegistry()
   //Control Panel Applet
   InstLog(CResStr(IDS_REMCPL));
   RegDelVal(HKLM,L"Software\\Microsoft\\Windows\\CurrentVersion\\Control Panel\\Cpls",L"SuRunCpl");
+  TCHAR CPL[4096];
+  GetSystemWindowsDirectory(CPL,4096);
+  PathAppend(CPL,L"SuRunExt.dll");
+  RegDelVal(HKLM,L"Software\\Microsoft\\Windows\\CurrentVersion\\Control Panel\\Extended Properties\\{305CA226-D286-468e-B848-2B2E8E697B74} 2",CPL);
   //AutoRun, System Menu Hook
   InstLog(CResStr(IDS_REMAUTORUN));
   RegDelVal(HKLM,L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",CResStr(IDS_SYSMENUEXT));
@@ -1095,6 +1437,8 @@ BOOL DeleteService(BOOL bJustStop=FALSE)
     InstLog(CResStr(IDS_DELREG));
     //remove COM Object Settings
     DelRegKey(HKCR,L"CLSID\\" sGUID);
+    //restore RunAs
+    ReplaceSuRunWithRunAs();
   }
   //Remove SuRunners from Registry
   SetEnergy(false);
@@ -1356,8 +1700,8 @@ INT_PTR CALLBACK InstallDlgProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
         {
           //Settings
           g_bKeepRegistry=IsDlgButtonChecked(hwnd,IDC_KEEPREGISTRY)!=0;
-          g_bDelSuRunners=IsDlgButtonChecked(hwnd,IDC_DELSURUNNERS)!=0;
-          g_bSR2Admins=IsDlgButtonChecked(hwnd,IDC_SR2ADMIN)!=0;
+          g_bDelSuRunners=(!g_bKeepRegistry) && IsDlgButtonChecked(hwnd,IDC_DELSURUNNERS)!=0;
+          g_bSR2Admins=g_bDelSuRunners && IsDlgButtonChecked(hwnd,IDC_SR2ADMIN)!=0;
           //Hide Checkboxes, show Listbox
           ShowWindow(GetDlgItem(hwnd,IDC_KEEPREGISTRY),SW_HIDE);
           ShowWindow(GetDlgItem(hwnd,IDC_DELSURUNNERS),SW_HIDE);
@@ -1425,6 +1769,27 @@ BOOL UserUninstall()
 
 //////////////////////////////////////////////////////////////////////////////
 // 
+// CheckForEmptyAdminPasswords
+// 
+//////////////////////////////////////////////////////////////////////////////
+static void CheckForEmptyAdminPasswords()
+{
+  _tcscpy(g_RunData.cmdLine,_T("/CHECKFOREMPTYADMINPASSWORDS"));
+  HANDLE hPipe=CreateFile(ServicePipeName,GENERIC_WRITE,0,0,OPEN_EXISTING,0,0);
+  if(hPipe==INVALID_HANDLE_VALUE)
+    return;
+  g_RetVal=RETVAL_WAIT;
+  DWORD n=0;
+  WriteFile(hPipe,&g_RunData,sizeof(RUNDATA),&n,0);
+  CloseHandle(hPipe);
+  Sleep(10);
+  for(n=0;(g_RetVal==RETVAL_WAIT)&&(n<30);n++)
+    Sleep(100);
+  zero(g_RunData.cmdLine);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// 
 // HandleServiceStuff: called on App Entry before WinMain()
 // 
 //////////////////////////////////////////////////////////////////////////////
@@ -1439,7 +1804,7 @@ bool HandleServiceStuff()
   if ((cmd.argc()==3)&&(_tcsicmp(cmd.argv(1),_T("/AskPID"))==0))
   {
     SuRun(wcstol(cmd.argv(2),0,10));
-    DeleteSafeDesktop();
+    DeleteSafeDesktop(false);
     ExitProcess(~GetCurrentProcessId());
     return true;
   }
@@ -1463,10 +1828,19 @@ bool HandleServiceStuff()
     //System Menu Hook: This is AutoRun for every user
     if (_tcsicmp(cmd.argv(1),_T("/SYSMENUHOOK"))==0)
     {
-      if (IsAdmin())
-        return ExitProcess(0),true;
-      if ((!GetUseIATHook) && (!GetRestartAsAdmin) && (!GetStartAsAdmin))
-        return ExitProcess(0),true;
+      CreateMutex(NULL,true,_T("SuRun_SysMenuHookIsRunning"));
+      if (GetLastError()==ERROR_ALREADY_EXISTS)
+        return ExitProcess(-1),true;
+      g_RunData.CliProcessId=GetCurrentProcessId();
+      g_RunData.CliThreadId=GetCurrentThreadId();
+      GetWinStaName(g_RunData.WinSta,countof(g_RunData.WinSta));
+      GetDesktopName(g_RunData.Desk,countof(g_RunData.Desk));
+      GetProcessUserName(GetCurrentProcessId(),g_RunData.UserName);
+      //To start control Panel and other Explorer children we need to tell 
+      //Explorer to start a new Process, because the Shell updates the state 
+      //from the registry and this cant' be forced to be done "now", the
+      //"SeparateProcess" registry value must be set early an remain set
+      SetSeparateProcess(1);
       //ToDo: EnumProcesses,EnumProcessModules,GetModuleFileNameEx to check
       //if the hooks are still loaded
 
@@ -1476,6 +1850,12 @@ bool HandleServiceStuff()
       if ((ss==SERVICE_STOPPED)||(ss==SERVICE_START_PENDING))
         while ((GetTickCount()<3*60*1000)&&(CheckServiceStatus()!=SERVICE_RUNNING))
             Sleep(1000);
+      CheckForEmptyAdminPasswords();
+      if ((!ShowTray(g_RunData.UserName))&& IsAdmin())
+        return ExitProcess(0),true;
+      if ( (!GetUseIATHook) && (!ShowTray(g_RunData.UserName))
+        && (!GetRestartAsAdmin) && (!GetStartAsAdmin))
+        return ExitProcess(0),true;
       InstallSysMenuHook();
 #ifdef _WIN64
       {
@@ -1492,8 +1872,29 @@ bool HandleServiceStuff()
         }
       }
 #endif _WIN64
+      bool TSA=FALSE;
       while (CheckServiceStatus()==SERVICE_RUNNING)
-      	Sleep(1000);
+      {
+        if (ShowTray(g_RunData.UserName))
+        {
+          if(!TSA)
+            InitTrayShowAdmin();
+          TSA=TRUE;
+          if (!ProcessTrayShowAdmin())
+            Sleep(333);
+        }else
+        {
+          if(TSA)
+            CloseTrayShowAdmin();
+          TSA=FALSE;
+          Sleep(1000);
+        }
+        if ( (!GetUseIATHook) && (!ShowTray(g_RunData.UserName)) 
+          && (!GetRestartAsAdmin) && (!GetStartAsAdmin))
+          break;
+      }
+      if(TSA)
+        CloseTrayShowAdmin();
       UninstallSysMenuHook();
       ExitProcess(0);
       return true;

@@ -3,6 +3,25 @@ Microsoft Developer Studio Workspace File, Format Version 6.00
 
 ###############################################################################
 
+Project: "InstallSuRun"=.\InstallSuRun\InstallSuRun.dsp - Package Owner=<4>
+
+Package=<5>
+{{{
+    begin source code control
+    "$/SuRun/InstallSuRun", VLCDAAAA
+    .\installsurun
+    end source code control
+}}}
+
+Package=<4>
+{{{
+    Begin Project Dependency
+    Project_Dep_Name SuRun
+    End Project Dependency
+}}}
+
+###############################################################################
+
 Project: "SuRun"=.\SuRun.dsp - Package Owner=<4>
 
 Package=<5>
@@ -22,7 +41,7 @@ Package=<4>
 
 ###############################################################################
 
-Project: "SuRunExt"=.\surunext\SuRunExt.dsp - Package Owner=<4>
+Project: "SuRunExt"=.\SuRunExt\SuRunExt.dsp - Package Owner=<4>
 
 Package=<5>
 {{{
@@ -38,26 +57,14 @@ Package=<4>
 
 ###############################################################################
 
-Project: "InstallSuRun"=.\InstallSuRun\InstallSuRun.dsp - Package Owner=<4>
-
-Package=<5>
-{{{
-    begin source code control
-    "$/SuRun/InstallSuRun", VLCDAAAA
-    .\installsurun
-    end source code control
-}}}
-
-Package=<4>
-{{{
-}}}
-
-###############################################################################
-
 Global:
 
 Package=<5>
 {{{
+    begin source code control
+    "$/SuRun", TSQCAAAA
+    .
+    end source code control
 }}}
 
 Package=<3>

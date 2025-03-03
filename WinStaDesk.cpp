@@ -292,10 +292,11 @@ void DenyUserAccessToDesktop(HDESK hDesk)
 class CRunOnNewDeskTop
 {
 public:
-  CRunOnNewDeskTop(LPCTSTR WinStaName,LPCTSTR DeskName,BOOL bCreateBkWnd);
+  CRunOnNewDeskTop(LPCTSTR WinStaName,LPCTSTR DeskName,bool bCreateBkWnd,bool bFadeIn);
   ~CRunOnNewDeskTop();
   bool IsValid();
   void CleanUp();
+  void FadeOut();
 private:
   bool    m_bOk;
   HWINSTA m_hwinstaSave;
@@ -303,6 +304,7 @@ private:
   HDESK   m_hdeskSave;
   HDESK   m_hdeskUser;
   HDESK   m_hDeskSwitch;
+public:
   CBlurredScreen m_Screen;
 };
 
@@ -376,11 +378,10 @@ private:
 // 
 //////////////////////////////////////////////////////////////////////////////
 
-CRunOnNewDeskTop::CRunOnNewDeskTop(LPCTSTR WinStaName,LPCTSTR DeskName,BOOL bCreateBkWnd)
+CRunOnNewDeskTop::CRunOnNewDeskTop(LPCTSTR WinStaName,LPCTSTR DeskName,bool bCreateBkWnd,bool bFadeIn)
 {
   m_hDeskSwitch=NULL;
   m_hwinstaUser=NULL;
-  m_bOk=TRUE;
   m_bOk=FALSE;
   //Get current WindowStation and Desktop
   m_hwinstaSave=GetProcessWindowStation();
@@ -452,6 +453,9 @@ CRunOnNewDeskTop::CRunOnNewDeskTop(LPCTSTR WinStaName,LPCTSTR DeskName,BOOL bCre
     return;
   }
   //DenyUserAccessToDesktop(m_hDeskSwitch);
+  //Show Desktop Background
+  if (bCreateBkWnd)
+    m_Screen.Show(bFadeIn);
   //Switch to the new Desktop
   if (!SwitchDesktop(m_hdeskUser))
   {
@@ -460,16 +464,15 @@ CRunOnNewDeskTop::CRunOnNewDeskTop(LPCTSTR WinStaName,LPCTSTR DeskName,BOOL bCre
     return;
   }
   m_bOk=TRUE;
-  //Show Desktop Background
-  if (bCreateBkWnd)
-    m_Screen.Show();
+}
+
+void CRunOnNewDeskTop::FadeOut()
+{
+  m_Screen.FadeOut();
 }
 
 void CRunOnNewDeskTop::CleanUp()
 {
-  //Delete Backgroung Window
-  if(m_bOk)
-    m_Screen.Done();
   //Switch back to the interactive Desktop
   if(m_hDeskSwitch)
   {
@@ -480,6 +483,9 @@ void CRunOnNewDeskTop::CleanUp()
       DBGTrace1("CRunOnNewDeskTop: CloseDesktop failed: %s",GetLastErrorNameStatic());
     m_hDeskSwitch=NULL;
   }
+  //Delete Background Window
+  if(m_bOk)
+    m_Screen.Done();
   //Set the previous Window Station
   if (m_hwinstaUser)
   {
@@ -515,12 +521,12 @@ bool CRunOnNewDeskTop::IsValid()
 CRunOnNewDeskTop* g_RunOnNewDesk=NULL;
 CStayOnDeskTop* g_StayOnDesk=NULL;
 
-bool CreateSafeDesktop(LPTSTR WinSta,BOOL BlurDesk)
+bool CreateSafeDesktop(LPTSTR WinSta,bool BlurDesk,bool bFade)
 {
-  DeleteSafeDesktop();
+  DeleteSafeDesktop(false);
   //Every "secure" Desktop has its own name:
   CResStr DeskName(L"SRD_%04x",GetTickCount());
-  CRunOnNewDeskTop* rond=new CRunOnNewDeskTop(WinSta,DeskName,BlurDesk);
+  CRunOnNewDeskTop* rond=new CRunOnNewDeskTop(WinSta,DeskName,BlurDesk,bFade);
   if (!rond)
     return false;
   if (!rond->IsValid())
@@ -533,8 +539,10 @@ bool CreateSafeDesktop(LPTSTR WinSta,BOOL BlurDesk)
   return true;
 }
 
-void DeleteSafeDesktop()
+void DeleteSafeDesktop(bool bFade)
 {
+  if (g_RunOnNewDesk && bFade)
+    g_RunOnNewDesk->FadeOut();
   if (g_StayOnDesk)
     delete g_StayOnDesk;
   g_StayOnDesk=NULL;
@@ -542,3 +550,16 @@ void DeleteSafeDesktop()
     delete g_RunOnNewDesk;
   g_RunOnNewDesk=NULL;
 }
+
+//int TestBS()
+//{
+//  CreateSafeDesktop(_T("WinSta0"),true);
+//  DWORD t=GetTickCount();
+//  while (GetTickCount()-t<600)
+//    g_RunOnNewDesk->m_Screen.MsgLoop();
+//  DeleteSafeDesktop(true);
+//  ExitProcess(0);
+//  return 1;
+//}
+//
+//int tbs=TestBS();
