@@ -24,12 +24,18 @@
 #include <initguid.h>
 #include <shlwapi.h>
 #include <lmcons.h>
+#include <Winwlx.h>
+#include <psapi.h>
+#include <tlhelp32.h>
+#include <wtsapi32.h>
 
 #pragma comment(lib,"User32.lib")
 #pragma comment(lib,"ole32.lib")
 #pragma comment(lib,"Shell32.lib")
 #pragma comment(lib,"ShFolder.Lib")
 #pragma comment(lib,"Shlwapi.lib")
+#pragma comment(lib,"PSAPI.lib")
+#pragma comment(lib,"WTSApi32.lib")
 
 #include "../Setup.h"
 #include "../Service.h"
@@ -52,16 +58,16 @@
 
 UINT g_cRefThisDll = 0;    // Reference count of this DLL.
 
-DWORD g_LoadAppInitDLLs = 0;
-
-#ifdef _Win64
-DWORD g_LoadAppInit32DLLs = 0;
-#endif _Win64
-
 #pragma data_seg()
 #pragma comment(linker, "/section:.SHDATA,RWS")
 
 HINSTANCE   l_hInst     = NULL;
+TCHAR       l_User[514] = {0};
+BOOL        l_bSetHook  = TRUE;
+DWORD       l_Groups    = 0;
+
+#define     l_IsAdmin     ((l_Groups&IS_IN_ADMINS)!=0)
+#define     l_IsSuRunner  ((l_Groups&IS_IN_SURUNNERS)!=0)
 
 UINT        WM_SYSMH0   = 0;
 UINT        WM_SYSMH1   = 0;
@@ -361,39 +367,35 @@ static void PrintDataObj(LPDATAOBJECT pDataObj)
 STDMETHODIMP CShellExt::Initialize(LPCITEMIDLIST pIDFolder, LPDATAOBJECT pDataObj, HKEY hRegKey)
 {
 #ifdef DoDBGTrace
-  TCHAR Path[4096]={0};
-  if (pIDFolder)
-    SHGetPathFromIDList(pIDFolder,Path);
-  TCHAR FileClass[4096]={0};
-  if(hRegKey)
-    GetRegStr(hRegKey,0,L"",FileClass,4096);
-  TCHAR File[4096]={0};
-  if(pDataObj)
-  {
-    FORMATETC fe = {CF_HDROP, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
-    STGMEDIUM stm;
-    if (SUCCEEDED(pDataObj->GetData(&fe,&stm)))
-    {
-      if(DragQueryFile((HDROP)stm.hGlobal,(UINT)-1,NULL,0)==1)
-        DragQueryFile((HDROP)stm.hGlobal,0,File,4096-1);
-      ReleaseStgMedium(&stm);
-    }
-  }
-  DBGTrace3("CShellExt::Initialize(%s,%s,%s)",Path,File,FileClass);
-  if(pDataObj)
-    PrintDataObj(pDataObj);
+//  TCHAR Path[4096]={0};
+//  if (pIDFolder)
+//    SHGetPathFromIDList(pIDFolder,Path);
+//  TCHAR FileClass[4096]={0};
+//  if(hRegKey)
+//    GetRegStr(hRegKey,0,L"",FileClass,4096);
+//  TCHAR File[4096]={0};
+//  if(pDataObj)
+//  {
+//    FORMATETC fe = {CF_HDROP, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+//    STGMEDIUM stm;
+//    if (SUCCEEDED(pDataObj->GetData(&fe,&stm)))
+//    {
+//      if(DragQueryFile((HDROP)stm.hGlobal,(UINT)-1,NULL,0)==1)
+//        DragQueryFile((HDROP)stm.hGlobal,0,File,4096-1);
+//      ReleaseStgMedium(&stm);
+//    }
+//  }
+//  DBGTrace3("CShellExt::Initialize(%s,%s,%s)",Path,File,FileClass);
+//  if(pDataObj)
+//    PrintDataObj(pDataObj);
 #endif DoDBGTrace
   zero(m_ClickFolderName);
   m_pDeskClicked=FALSE;
-  {
-    //Non SuRunners don't need the Shell Extension!
-    TCHAR User[UNLEN+GNLEN+2]={0};
-    GetProcessUserName(GetCurrentProcessId(),User);
-    if (!IsInSuRunners(User))
-      return NOERROR;
-  }
+  //Non SuRunners don't need the Shell Extension!
+  if ((!l_IsSuRunner)||GetHideFromUser(l_User))
+    return NOERROR;
   //Non Admins don't need the Shell Extension!
-  if (IsAdmin())
+  if (!l_bSetHook)
     return NOERROR;
   if (pDataObj==0)
   {
@@ -518,23 +520,19 @@ static CRITICAL_SECTION l_SxHkCs;
 STDMETHODIMP CShellExt::Execute(LPSHELLEXECUTEINFO pei)
 {
 #ifdef DoDBGTrace
-  DBGTrace15("SuRun ShellExtHook: siz=%d, msk=%X wnd=%X, verb=%s, file=%s, parms=%s, "
-    L"dir=%s, nShow=%X, inst=%X, idlist=%X, class=%s, hkc=%X, hotkey=%X, hicon=%X, hProc=%X",
-    pei->cbSize,pei->fMask,pei->hwnd,pei->lpVerb,pei->lpFile,pei->lpParameters,
-    pei->lpDirectory,pei->nShow,pei->hInstApp,pei->lpIDList,
-    pei->lpClass,
-    pei->hkeyClass,pei->dwHotKey,pei->hIcon,pei->hProcess);
+//  DBGTrace15("SuRun ShellExtHook: siz=%d, msk=%X wnd=%X, verb=%s, file=%s, parms=%s, "
+//    L"dir=%s, nShow=%X, inst=%X, idlist=%X, class=%s, hkc=%X, hotkey=%X, hicon=%X, hProc=%X",
+//    pei->cbSize,pei->fMask,pei->hwnd,pei->lpVerb,pei->lpFile,pei->lpParameters,
+//    pei->lpDirectory,pei->nShow,pei->hInstApp,pei->lpIDList,
+//    pei->lpClass,
+//    pei->hkeyClass,pei->dwHotKey,pei->hIcon,pei->hProcess);
 #endif DoDBGTrace
   //Admins don't need the ShellExec Hook!
-  if (IsAdmin())
+  if (l_IsAdmin)
     return S_FALSE;
-  {
-    //Non SuRunners don't need the ShellExec Hook!
-    TCHAR User[UNLEN+GNLEN+2]={0};
-    GetProcessUserName(GetCurrentProcessId(),User);
-    if (!IsInSuRunners(User))
-      return S_FALSE;
-  }
+  //Non SuRunners don't need the ShellExec Hook!
+  if ((!l_IsSuRunner))
+    return S_FALSE;
   if (!pei)
   {
     DBGTrace("SuRun ShellExtHook Error: LPSHELLEXECUTEINFO==NULL");
@@ -657,14 +655,21 @@ STDMETHODIMP CShellExt::Execute(LPSHELLEXECUTEINFO pei)
 
 LONG CALLBACK CPlApplet(HWND hwnd,UINT uMsg,LPARAM lParam1,LPARAM lParam2)
 { 
+  BOOL noCPL=HideSuRun(l_User,l_Groups);
   switch (uMsg) 
   { 
   case CPL_INIT:
+    if (noCPL)
+      return FALSE;
     return TRUE; 
   case CPL_GETCOUNT:
+    if (noCPL)
+      return 0;
     return 1; 
   case CPL_INQUIRE:
     {
+      if (noCPL)
+        return 1;
       LPCPLINFO cpli=(LPCPLINFO)lParam2; 
       cpli->lData = 0; 
       cpli->idIcon = IDI_MAINICON;
@@ -674,6 +679,8 @@ LONG CALLBACK CPlApplet(HWND hwnd,UINT uMsg,LPARAM lParam1,LPARAM lParam2)
     }
   case CPL_DBLCLK:    // application icon double-clicked 
     {
+      if (noCPL)
+        return 1;
       TCHAR fSuRunExe[4096];
       GetSystemWindowsDirectory(fSuRunExe,4096);
       PathAppend(fSuRunExe,L"SuRun.exe");
@@ -684,6 +691,126 @@ LONG CALLBACK CPlApplet(HWND hwnd,UINT uMsg,LPARAM lParam1,LPARAM lParam2)
   } 
   return 0; 
 } 
+
+//////////////////////////////////////////////////////////////////////////////
+// 
+//  KillProcess
+// 
+//////////////////////////////////////////////////////////////////////////////
+
+// callback function for window enumeration
+BOOL g_bKilledOne=FALSE;
+static BOOL CALLBACK CloseAppEnum(HWND hwnd,LPARAM lParam )
+{
+  // no top level window, or invisible?
+  if ((GetWindow(hwnd,GW_OWNER))||(!IsWindowVisible(hwnd)))
+    return TRUE;
+  TCHAR s[4096]={0};
+  if ((!InternalGetWindowText(hwnd,s,countof(s)))||(s[0]==0))
+    return TRUE;
+  DWORD dwID;
+  GetWindowThreadProcessId(hwnd, &dwID) ;
+  if(dwID==(DWORD)lParam)
+  {
+    DWORD_PTR r;
+    SendMessageTimeout(hwnd,WM_QUERYENDSESSION,0,ENDSESSION_LOGOFF,SMTO_ABORTIFHUNG,5000,&r);
+    PostMessage(hwnd,WM_ENDSESSION,0,ENDSESSION_LOGOFF) ;
+    g_bKilledOne=TRUE;
+  }
+  return TRUE ;
+}
+
+void KillProcess(DWORD PID,HANDLE hProcess)
+{
+  //Post WM_CLOSE to all Windows of PID
+  g_bKilledOne=FALSE;
+  EnumWindows(CloseAppEnum,(LPARAM)PID);
+  //Give the Process time to close
+  if ((!g_bKilledOne) || (WaitForSingleObject(hProcess,5000)!=WAIT_OBJECT_0))
+    TerminateProcess(hProcess,0);
+  CloseHandle(hProcess);
+}
+
+int KillIfSuRunProcess(PSID LogonSID,LUID SrcId,DWORD PID)
+{
+  HANDLE hp=OpenProcess(PROCESS_ALL_ACCESS,0,PID);
+  if (!hp)
+    return -1;
+  HANDLE ht=0;
+  int RetVal=0;
+  if(OpenProcessToken(hp,TOKEN_ALL_ACCESS,&ht))
+  {
+    TOKEN_SOURCE tsrc;
+    DWORD n=0;
+    if (GetTokenInformation(ht,TokenSource,&tsrc,sizeof(tsrc),&n))
+    {
+      PSID tSID=GetLogonSid(ht);
+      if (tSID && IsValidSid(tSID) && EqualSid(LogonSID,tSID))
+      {
+        if ((memcmp(&SrcId,&tsrc.SourceIdentifier,sizeof(LUID))==0)
+          &&(strcmp(tsrc.SourceName,"SuRun")==0))
+        {
+          TerminateProcess(hp,0);//KillProcess(PID,hp);
+          DBGTrace1("SuRunLogoffUser: PID:%d KILLED",PID);
+          RetVal=1;
+        }else
+          DBGTrace1("SuRunLogoffUser: PID:%d was NOT killed",PID);
+      }else
+        DBGTrace1("Sid(%d) mismatch",PID);
+      free(tSID);
+    }else
+      DBGTrace2("GetTokenInformation(%d) failed: %s",PID,GetLastErrorNameStatic());
+    CloseHandle(ht);
+  }else
+    DBGTrace2("OpenProcessToken(%d) failed: %s",PID,GetLastErrorNameStatic());
+  CloseHandle(hp);
+  return RetVal;
+}
+
+//Winlogon Logoff event
+VOID APIENTRY SuRunLogoffUser(PWLX_NOTIFICATION_INFO Info)
+{
+  //Terminate all Processes that have the same logon SID and 
+  //"SuRun" as the Token source name
+  PSID LogonSID=GetLogonSid(Info->hToken);
+  TOKEN_SOURCE Logonsrc;
+  DWORD n=0;
+  GetTokenInformation(Info->hToken,TokenSource,&Logonsrc,sizeof(Logonsrc),&n);
+  //EnumProcesses does not work here! need to call WTSEnumerateProcesses
+  n=0;
+  WTS_PROCESS_INFO* ppi=0;
+  if(WTSEnumerateProcesses(WTS_CURRENT_SERVER_HANDLE,0,1,&ppi,&n) && n)
+  {
+    for (DWORD i=0;i<n;i++)
+    {
+      DBGTrace2("SuRunLogoffUser trying PID:%d \"%s\"",
+        ppi[i].ProcessId,ppi[i].pProcessName);
+      KillIfSuRunProcess(LogonSID,Logonsrc.SourceIdentifier,ppi[i].ProcessId);
+    }
+    WTSFreeMemory(ppi);
+  }else
+  {
+    //Win2k: if WTSEnumerateProcesses does not work, try ToolHelp32
+    HANDLE h=CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0);
+    if(h!=INVALID_HANDLE_VALUE)
+    {
+      PROCESSENTRY32 pe32={0};
+      pe32.dwSize=sizeof(pe32);
+      if (Process32First(h, &pe32)) 
+      { 
+        do
+        {
+          DBGTrace2("SuRunLogoffUser trying PID:%d \"%s\"",
+            pe32.th32ProcessID,pe32.szExeFile);
+          KillIfSuRunProcess(LogonSID,Logonsrc.SourceIdentifier,pe32.th32ProcessID);
+        }while (Process32Next(h, &pe32)); 
+      } 
+      CloseHandle(h);
+    }
+  }
+  free(LogonSID);
+	return;
+}
 
 //////////////////////////////////////////////////////////////////////////////
 //
@@ -802,26 +929,27 @@ BOOL APIENTRY DllMain( HINSTANCE hInstDLL,DWORD dwReason,LPVOID lpReserved)
 {
   TCHAR fMod[MAX_PATH];
   GetModuleFileName(0,fMod,MAX_PATH);
-  BOOL bAdmin=IsAdmin();
+  l_Groups=UserIsInSuRunnersOrAdmins();
   DWORD PID=GetCurrentProcessId();
   //Process Detach:
   if(dwReason==DLL_PROCESS_DETACH)
   {
-#ifdef _DEBUG
-//    DBGTrace5("DLL_PROCESS_DETACH(hInst=%x) %d:%s[%s], Admin=%d",
-//      hInstDLL,PID,fMod,GetCommandLine(),bAdmin);
-#endif _DEBUG
+#ifdef DoDBGTrace
+    DBGTrace5("Detach(hInst=%x) %d:%s[%s], Admin=%d",
+      hInstDLL,PID,fMod,GetCommandLine(),l_IsAdmin);
+#endif DoDBGTrace
     EnterCriticalSection(&l_SxHkCs);
     LeaveCriticalSection(&l_SxHkCs);
     DeleteCriticalSection(&l_SxHkCs);
     //IAT-Hook
-    UnloadHooks();
+    //UnloadHooks();
     return TRUE;
   }
   if(dwReason!=DLL_PROCESS_ATTACH)
     return TRUE;
   //Process Attach:
   DisableThreadLibraryCalls(hInstDLL);
+  GetProcessUserName(PID,l_User);
   if (l_hInst==hInstDLL)
     return TRUE;
   l_hInst=hInstDLL;
@@ -832,27 +960,31 @@ BOOL APIENTRY DllMain( HINSTANCE hInstDLL,DWORD dwReason,LPVOID lpReserved)
 #endif _DEBUG_ENU
   WM_SYSMH0=RegisterWindowMessage(_T("SYSMH1_2C7B6088-5A77-4d48-BE43-30337DCA9A86"));
   WM_SYSMH1=RegisterWindowMessage(_T("SYSMH2_2C7B6088-5A77-4d48-BE43-30337DCA9A86"));
+  l_bSetHook=!l_IsAdmin;
   //IAT Hook:
-  if ((!bAdmin) && GetUseIATHook)
+  if (l_bSetHook)
   {
     //Do not set hooks into SuRun or Admin Processes!
     TCHAR fSuRunExe[4096];
     GetSystemWindowsDirectory(fSuRunExe,4096);
     PathAppend(fSuRunExe,L"SuRun.exe");
     PathQuoteSpaces(fSuRunExe);
-    BOOL bSetHook=(!bAdmin)&&(_tcsicmp(fMod,fSuRunExe)!=0);
-//    DBGTrace6("DLL_PROCESS_ATTACH(hInst=%x) %d:%s[%s], Admin=%d, SetHook=%d",
-//      hInstDLL,PID,fMod,GetCommandLine(),bAdmin,bSetHook);
-    if(bSetHook)
+    l_bSetHook=(_tcsicmp(fMod,fSuRunExe)!=0) && (!IsInBlackList(fMod));
+#ifdef DoDBGTrace
+    if(IsInBlackList(fMod))
+      DBGTrace1("%s is blacklisted! No Hook!",fMod);
+    DBGTrace5("Attach(hInst=%x) %d:%s[%s], NOAdmin, SetHook=%d",
+      hInstDLL,PID,fMod,GetCommandLine(),l_bSetHook);
+#endif DoDBGTrace
+    if(l_bSetHook && GetUseIATHook)
       LoadHooks();
   }
-#ifdef _DEBUG
-//  else
-//    DBGTrace5("DLL_PROCESS_ATTACH(hInst=%x) %d:%s[%s], Admin=%d",
-//      hInstDLL,PID,fMod,GetCommandLine(),bAdmin);
-#endif _DEBUG
+#ifdef DoDBGTrace
+  else
+    DBGTrace4("Attach(hInst=%x) %d:%s[%s], ADMIN",hInstDLL,PID,fMod,GetCommandLine());
+#endif DoDBGTrace
   //DevInst
-//  if(!bAdmin)
+//  if(!l_IsAdmin)
 //  {
 //    TCHAR f[4096];
 //    GetSystemDirectory(f,4096);
@@ -861,10 +993,8 @@ BOOL APIENTRY DllMain( HINSTANCE hInstDLL,DWORD dwReason,LPVOID lpReserved)
 //    LPTSTR args=PathGetArgs(GetCommandLine());
 //    if((_tcsicmp(f,fMod)==0) &&(_tcsnicmp(L"newdev.dll,",args,11)==0))
 //    {
-//      TCHAR UserName[UNLEN+UNLEN+2]={0};
-//      GetProcessUserName(PID,UserName);
-//      if(GetInstallDevs(UserName))
-//        CreateThread(0,0,NewDevProc,0,0,0);
+//      if(GetInstallDevs(l_User))
+//        CloseHandle(CreateThread(0,0,NewDevProc,0,0,0));
 //    }
 //  }
   return TRUE;

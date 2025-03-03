@@ -12,6 +12,7 @@
 #include "setup.h"
 #include "resstr.h"
 #include "resource.h"
+#include "DBGTrace.h"
 
 #pragma comment(lib,"ShlWapi.lib")
 #pragma comment(lib,"advapi32.lib")
@@ -20,6 +21,8 @@
 #define CLASSNAME     _T("SuRunTrayShowAdminClass")
 #define MENU_SURUNSETUP WM_USER+903
 
+extern RUNDATA g_RunData;
+
 bool g_BallonTips=1;
 BOOL g_ForegroundWndIsAdmin=-1;
 HWND g_FgWnd=0;
@@ -27,29 +30,93 @@ HINSTANCE g_hInstance=0;
 TCHAR g_User[MAX_PATH*2+2]={0};
 NOTIFYICONDATA g_NotyData={0};
 
-static BOOL ForegroundWndIsAdmin(LPTSTR User,HWND& wnd,LPTSTR WndTitle)
+struct
 {
-  wnd=GetForegroundWindow();
-  if (!wnd)
-    return -1;
-  GetWindowThreadProcessId(wnd,&g_RunData.CurProcId);
-  g_RunData.bTrayShowAdmin=true;
+  DWORD CurProcId;
+  TCHAR CurUserName[UNLEN+GNLEN+2];
+  BOOL CurUserIsadmin;
+}g_TSAData={0};
+
+DWORD g_TSAPID=0;
+BOOL g_TSAThreadRunning=FALSE;
+
+//TSAThreadProc is called from Service!
+DWORD WINAPI TSAThreadProc(void* p)
+{
+  HANDLE hProc=OpenProcess(PROCESS_ALL_ACCESS,0,(DWORD)(DWORD_PTR)p);
+  if (!hProc)
+    return 0;
+  DWORD PID=0;
+  g_TSAThreadRunning=TRUE;
+  WriteProcessMemory(hProc,&g_TSAThreadRunning,&g_TSAThreadRunning,sizeof(g_TSAThreadRunning),0);
+  EnablePrivilege(SE_DEBUG_NAME);
+  for(;;)
+  {
+    SIZE_T s;
+    if ((WaitForSingleObject(hProc,333)==WAIT_OBJECT_0)
+     ||(!ReadProcessMemory(hProc,&g_TSAPID,&g_TSAData.CurProcId,sizeof(DWORD),&s))
+     ||(sizeof(DWORD)!=s))
+      return CloseHandle(hProc),0;
+    if (g_TSAData.CurProcId!=PID)
+    {
+      HANDLE h = OpenProcess(PROCESS_ALL_ACCESS,TRUE,g_TSAData.CurProcId);
+      if(h)
+      {
+        HANDLE hTok=0;
+        if (OpenProcessToken(h,TOKEN_QUERY|TOKEN_DUPLICATE,&hTok))
+        {
+          GetTokenUserName(hTok,g_TSAData.CurUserName);
+          g_TSAData.CurUserIsadmin=IsAdmin(hTok);
+          CloseHandle(hTok);
+          if(WriteProcessMemory(hProc,&g_TSAData,&g_TSAData,sizeof(g_TSAData),&s)
+            && (s==sizeof(g_TSAData)))
+            PID=g_TSAData.CurProcId;
+          else
+            DBGTrace1("WriteProcessMemory failed: %s",GetLastErrorNameStatic());
+        }else
+          DBGTrace1("OpenProcessToken failed: %s",GetLastErrorNameStatic());
+        CloseHandle(h);
+      }else
+        DBGTrace2("OpenProcess(%d) failed: %s",g_TSAData.CurProcId,GetLastErrorNameStatic());
+    }
+  }
+}
+
+BOOL StartTSAThread()
+{
+  if (g_TSAThreadRunning)
+    return TRUE;
+  g_TSAPID=0;
+  zero(g_TSAData);
+  g_RunData.KillPID=0xFFFFFFFF;
+  _tcscpy(g_RunData.cmdLine,_T("/TSATHREAD"));
   g_RetVal=RETVAL_WAIT;
   HANDLE hPipe=CreateFile(ServicePipeName,GENERIC_WRITE,0,0,OPEN_EXISTING,0,0);
   if(hPipe==INVALID_HANDLE_VALUE)
-    return -1;
+    return FALSE;
   DWORD n=0;
   WriteFile(hPipe,&g_RunData,sizeof(RUNDATA),&n,0);
   CloseHandle(hPipe);
   Sleep(10);
-  for(n=0;(g_RetVal==RETVAL_WAIT)&&(n<3);n++)
+  for(n=0;(!g_TSAThreadRunning)&&(n<100);n++)
     Sleep(100);
-  if(g_RetVal!=RETVAL_OK)
+  return g_TSAThreadRunning;
+}
+
+static BOOL ForegroundWndIsAdmin(LPTSTR User,HWND& wnd,LPTSTR WndTitle)
+{
+  if (!StartTSAThread())
     return -1;
-  _tcscpy(User,g_RunData.CurUserName);
-  if (!GetWindowText(wnd,WndTitle,MAX_PATH))
-    _stprintf(WndTitle,L"Process %d",g_RunData.CurProcId);
-  return g_RunData.CurUserIsadmin;
+  wnd=GetForegroundWindow();
+  if (!wnd)
+    return -1;
+  GetWindowThreadProcessId(wnd,&g_TSAPID);
+  _tcscpy(User,g_TSAData.CurUserName);
+  if (!g_TSAData.CurProcId)
+    return -1;
+  if (!InternalGetWindowText(wnd,WndTitle,MAX_PATH))
+    _stprintf(WndTitle,L"Process %d",g_TSAData.CurProcId);
+  return g_TSAData.CurUserIsadmin;
 }
 
 static void DisplayIcon()
@@ -137,6 +204,8 @@ void DisplayMenu(HWND hWnd)
   MenuAdd(hMenu,CResStr(_T("SuRun %s"),GetVersionString()),(UINT)-1,MFS_DEFAULT);
   AppendMenu(hMenu,MF_SEPARATOR,(UINT)-1,0);
   MenuAdd(hMenu,CResStr(IDS_CPLNAME),MENU_SURUNSETUP,0);
+  AllowSetForegroundWindow(GetCurrentProcessId());
+  SetForegroundWindow(hWnd);
   switch (TrackPopupMenu(hMenu,TPM_RIGHTALIGN|TPM_RETURNCMD|TPM_NONOTIFY|TPM_VERNEGANIMATION,
     pt.x+1,pt.y+1,0,hWnd,NULL))
   {
@@ -161,8 +230,13 @@ LRESULT CALLBACK WndMainProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPar
       case WM_CONTEXTMENU:
         DisplayMenu(hwnd);
         return 0;
-      };
-    };
+      }
+    }
+    break;
+  case WM_QUERYENDSESSION:
+    {
+      //ToDo: Warn, if SuRun processes are still running.
+    }
     break;
   }
   return DefWindowProc(hwnd , message, wParam, lParam);
@@ -205,13 +279,13 @@ void InitTrayShowAdmin()
   g_NotyData.uTimeout=10000;
 }
 
-BOOL ProcessTrayShowAdmin()
+BOOL ProcessTrayShowAdmin(BOOL bBalloon)
 {
-  g_BallonTips=ShowBalloon(g_RunData.UserName);
+  g_BallonTips=bBalloon!=0;
   DisplayIcon();
   MSG msg;
   int count=0;
-  while (PeekMessage(&msg,0,0,0,PM_REMOVE) && (count++<100))
+  while (PeekMessage(&msg,0,0,0,PM_REMOVE) && (count++<10))
   {
     TranslateMessage(&msg);
     DispatchMessage(&msg);

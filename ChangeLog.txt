@@ -1,11 +1,18 @@
+Done, to be tested:
+---------------------------
+
+SuRun 1.2.0.1 - 2008-08-12:
+---------------------------
+* FIX: Extensively reduced calls to LSA (lsass.exe)
+* FIX: All User/Group functions now use impersonation
+* FIX: The Tray Icon caused ~400 context switches per second and thus 2% CPU 
+    Load on "slow" machines
 
 ToDo
 ---------------------
-* Eclipse (JAVA) and SuRuns IAT Hook conflict
-* "*" at the end of a command means "anything from here matches"
-* Switchable Easy/Expert Settings
-* Configurable "Do not display messages" Option
-* "Require user password for SuRun Setings" Option
+* "SuRun /SYSMENUHOOK" must send WM_QUERYENDSESSION to elevated processes
+* "Show Warning for Admins with empty passwords" does not work with predefined 
+  Admin on XP Home
 
 To be done in future:
 ---------------------
@@ -15,10 +22,7 @@ To be done in future:
 
 Deferred Whishlist:
 ---------------------
-* White list command line editor in "SuRun settings" with auto quotes
-* "Cancel" count down progress bar/static
 * Console SuRun support
-* Connect Network drives for admin process: 
 * Intercept "rundll32.exe newdev.dll,": 
     needs CredUI hack for XP/2k3; ok with 2k and Vista
     use "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File 
@@ -28,15 +32,244 @@ Deferred Whishlist:
 SuRun Changes:
 ------------------------------------------------------------------------------
 
+SuRun 1.2.0.0 - 2008-08-03:
+---------------------------
+* SuRun does not need nor store user passwords any more.
+  SuRun does not need to put SuRunners into the Admin group anymore for 
+  starting elevated Processes. SuRun does not need to use a helper process to 
+  start the elevated process anymore.
+  SuRun does not depend any more on the Secondary Logon Service.
+  The new method of starting elevated processes also has one welcome side 
+  effect. All Network drives of the logged on user remain connected.
+* SuRun works in Windows Vista side by side with UAC
+* SuRun can Backup and Restore SuRun settings
+* SuRun can Export and Import a users program list
+* SuRun uses tricks so that you can start Explorer after an elevated 
+  Explorer runs. In Windows Vista SuRun uses Explorers command line switch 
+  "/SEPARATE" to start elevated processes.
+* To avoid AutoRun startup delays SuRuns service is now loaded in the 
+  "PlugPlay" service group, before the network is started.
+* SuRun has a Blacklist for Programs not to hook
+* New Settings Option to not detect Programs that require elevation
+* SuRun Settings have a "Set recommended options for home users" Button. 
+* Wildcards "*" and "?" are supported for commands in the users program list
+* When adding files to the users program list, SuRun adds automatic quotes.
+* Setup does a test run of added/edited commands
+* SuRuns "Replace RunAs" now preserves the original "RunAs" display name
+* New Setup Option "Hide SuRun from user"
+* New Setup Option "Require user password for SuRun Settings"
+* New Setup Option "Hide SuRun from users that are not member of the 
+  'SuRunners' Group"
+* When asking to elevate a process, a "Cancel" count down progress bar is shown
+* SuRun does not show "Restart as Admin" in system menu of the shell process
+* SuRun does not try to start automagically elevated "AsInvoker" Apps
+* "Restart as Admin" Processes are killed only AFTER the user chooses "OK"
+* "Restart as Admin" Processes are killed the way TaskManager closes 
+  Applications by sending WM_CLOSE to the top level widows of the process, 
+  giving the process 5 seconds time to close and then terminating the process.
+* FIX: In Windows x64 SuRun32 could not read SuRuns Settings
+* FIX: SuRun created an endless loop of "SuRun /USERINST" processes when it 
+  was run in the Ceedo sandbox.
+* FIX: SuRuns System menu entries did not always show on the first click.
+* FIX: When SuRun "Failed to create the safe Desktop" the WatchDog was shown on 
+  the users desktop
+* Safe Desktop is now created before the screenshot is made to save resources
+* The WatchDog process now handles SwitchDesktop issues
+* SuRun uses a separate thread to create and fade in the blurred screen
+* FIX: When installing applications that require to reboot and to run a "Setup"
+  on logon (XP SP3 is an example), SURUN asked to start that setup as Admin but 
+  then it DID NOT SWITCH BACK TO THE USER'S DESKTOP 
+* SuRun's IAT-Hook only hooks modules that actually use "CreateProcess"
+* SuRun's IAT-Hook uses InterlockedExchangePointer for better stability
+* Eclipse (JAVA) and SuRuns IAT Hook do not conflict anymore
+* The SuRun service uses uses a separate Thread to serve the Tray Icons
+
+SuRun 1.2.0.0 - 2008-07-30: (rc5)
+---------------------------
+* Added Ctrl+A and Del hotkeys to user's program list and Blacklist
+* Added HKLM\Software\SuRun "Language" DWORD= 1:German, 2:English, 3:Dutch
+* Minor fixes
+
+SuRun 1.1.9.12 - 2008-07-23: (rc2)
+---------------------------
+* Updated dutch resources
+* When deactivating the Tray Icon SuRun also deactivates balloon tips
+* When Hiding SuRun from all users, "Start as Administrator" did do nothing
+  on administrator accounts
+
+SuRun 1.1.9.11 - 2008-07-22: (rc1)
+---------------------------
+* SuRun does not import, export nor set defaults for the Windows Settings
+* When uninstalling SuRun removes the Windows settings for "ElevateNonAdmins",
+  "NoAutoRebootWithLoggedOnUsers" and "'Administrators' instead of 'Object 
+  creator' as default owner for objects created by administrators." ONLY if
+  they have been set by SuRun.
+
+SuRun 1.1.9.10 - 2008-07-18: (beta)
+---------------------------
+* When Uninstalling SuRun, the Windows settings for "ElevateNonAdmins",
+  "NoAutoRebootWithLoggedOnUsers" and "'Administrators' instead of 'Object 
+  creator' as default owner for objects created by administrators." are not 
+  disabled anymore.
+* Import/Export on settings page 2 only imports/exports the users program list.
+* Settings Backup does not ask for options. Just everything is backed up.
+* Cosmetical changes in Settings Dialog Page 1
+* Users program list can now have mutliple items selected and deleted at once
+* Turning off "Show Expert settings" does not ask nor set defaults anymore
+
+SuRun 1.1.9.9 - 2008-07-17: (beta)
+---------------------------
+* Cosmetical changes in Settings Dialog Pages 1 and 2
+* Removed Help-Button from SuRun Settings Page 2
+* FIX: When "Show SuRun settings for experienced users" was disabled, SuRun 
+  did always Set recommended defaults on Setup pages 3 and 4
+* FIX: SuRun's Tray menu now closes when clicking outside
+
+SuRun 1.1.9.8 - 2008-07-17: (beta)
+---------------------------
+* Cosmetical changes of Settings page 3
+* Removed "Desktop directory not present" message when opening/saving files
+* Removed option "Do not use 'SuRunners' group"
+* Export/Import is split: 
+  -On page 1 you can Import/Export all SuRun settings and SuRunners users
+  -On page 2 you can Import/Export the current users WhiteList and Settings
+
+SuRun 1.1.9.7b1 - 2008-07-16: (beta)
+---------------------------
+* Added option "Do not use 'SuRunners' group"
+* After a SuRunner was put to the SuRunners group, SuRun always asked for the 
+  password 
+* On Import, if no SuRunner is present, "Import Settings for <user>" is 
+  grayed out
+* If pages 3 or 4 were activated and data with pages 3 and 4 turned off was
+  imported, the UI was screwed up
+* Before Exporting data, current settings are applied
+
+
+SuRun 1.1.9.7 - 2008-07-15: (beta)
+---------------------------
+* Cosmetical stuff in SuRun settings
+* Setup Dialog restores last selected tab and user after import
+* FIX: Import of "Replace RunAs" failed
+* FIX: SuRun did not delete HKLM\Security\SuRun
+
+SuRun 1.1.9.6 - 2008-07-15: (beta)
+---------------------------
+* Import/Export settings
+* Cosmetical improvements for SuRun's Settings Dialog
+
+SuRun 1.1.9.5 - 2008-07-15: (beta)
+---------------------------
+* SuRun Settings Dialog has now four tabs. The last two contain settings for 
+  experienced users and can be hidden.
+* Implemented Explorer tricks so that you can start Explorer after an elevated 
+  Explorer runs. In Windows Vista SuRun uses Explorers command line switch 
+  "/SEPARATE" to start elevated processes.
+* To avoid AutoRun startup delays SuRun's service is now loaded in the 
+  "PlugPlay" service group, before the network is started.
+* Tray Message Windows placement has been improved.
+
+SuRun 1.1.9.4 - 2008-07-12: (beta)
+---------------------------
+* SuRun Settings dialog is now resizeable
+* Tray Message Windows move when Display resolution changes
+* Removed indeterminate state for "Show Icon in Taskbar"
+* Removed indeterminate state for "Replace RunAs"
+* Removed "Restricted SuRunner may start this app" Option. 
+  Restricted SuRunners may run programs with elevated rights as specified in 
+  their program list.
+* Restricted SuRunners are not asked any more if they want to start Setup(etc.) 
+  programs with elevated rights
+* Button "Set recommended options for home users" sets Settings on all pages
+  but only for selected user.
+* Options, that new SuRunners may not run Setup and that they and may only run 
+  predefined Apps with SuRun were removed
+* FIX: Tray Message Windows did not close after 20s
+* FIX: All elevated processes were started from %windir%\system32
+
+SuRun 1.1.9.3 - 2008-07-09: (beta)
+---------------------------
+* Blacklist for Programs not to hook
+* Setup-Page 3 revised
+* FIX: "Store Password" in RunAs-Dialog was not moved while Dialog reszing 
+* FIX: "SuRun /RunAs" did load the wrong user environment
+* FIX: Another try to display SuRun in the System Menu on the first click
+* FIX: The "Warning for Admins with empty passwords" did not alway show up
+
+SuRun 1.1.9.2 - 2008-07-08: (beta)
+---------------------------
+* Warning for SuRunners that want to hide SuRun from themselves
+* FIX: "Hide SuRun from all non SuRunners" did also hide SuRun Settings from 
+  Administrators
+* FIX: SuRun did not work with console processes (e.g. cmd.exe)
+* FIX: If "hide SuRun from all non SuRunners" was active, SuRun did by default 
+  hide from all Users
+
+SuRun 1.1.9.1 - 2008-07-07: (beta)
+---------------------------
+* SuRun does not store passwords any more. To start a user process, SuRun uses
+  zwCreateToken and to RunAs something LSALogonUser is used.
+* Setup Option to "store passwords" was changed to "Require user password" 
+  with an optional grace period
+* New Settings Option to hide SuRun from all non SuRunners
+* New Settings Option to not detect Programs that require elevation
+* FIX: Empty Admin Password Warning did not show on NonAdmin/NonSuRunners 
+  without Tray Icon
+* FIX: Settings Page 2 "Show Ballon Tips" was grayed out after "Set recommended 
+  options for home users"
+* FIX: In Windows x64 SuRun32 could not read SuRun's Settings (since SuRun 1.0!)
+* FIX: SuRun created an endless loop of "SuRun /USERINST" processes when it 
+  was run in the Ceedo sandbox.
+* FIX: SuRun's System menu entries did not always show on the first click.
+
+SuRun 1.1.9.0 - 2008-07-05: (beta)
+---------------------------
+* SuRun uses LSALogonUser instead of CreateProcessWithLogonW. Processes started
+  by SuRun will be terminated by a WinLogon Notification handler in 
+  SuRunExt.dll when the user logs off.
+  SuRun does not need to put SuRunners into the Admin group anymore for 
+  starting elevated Processes. SuRun does not need to use a helper process to 
+  start the elevated process anymore.
+  SuRun does not depend any more on the Secondary Logon Service.
+* SuRun seems to work in Windows Vista side by side with UAC enabled
+* SuRun Settigs have a "Set recommended options for home users" Button. 
+  Clicking this button causes SuRun to set all Options in the currently visible 
+  Settings page to be set to "usual home user" settings
+* Wildcards "*" and "?" are supported for commands in the users program list
+* When adding files to the users program list, SuRun adds automatic quotes.
+* Setup does a test run of added/edited commands
+* SuRun's "Replace RunAs" now preserves the original "RunAs" display name
+* New Setup Option "Hide SuRun from user"
+* New Setup Option "Require user password for SuRun Settings"
+* When asking to elevate a process, a "Cancel" count down progress bar is shown
+* SuRun does not show "Restart as Admin" in system menu of the shell process
+* SuRun does not try to start automagically elevated "AsInvoker" Apps
+* "Restart as Admin" Processes are killed only AFTER the user chooses "OK"
+* "Restart as Admin" Processes are killed the way TaskManager closes 
+  Applications by sending WM_CLOSE to the top level widows of the process, 
+  giving the process 5 seconds time to close and then terminating the process.
+* When SuRun "Failed to create the safe Desktop" the WatchDog was shown on the 
+  users desktop
+* Safe Desktop is now created before the screenshot is made to save resources
+* The WatchDog process now handles SwitchDesktop issues
+* SuRun uses a separate thread to create and fade in the blurred screen
+* When installing applications that require to reboot and to run a "Setup" on
+  logon (XP SP3 is an example), SURUN asked to start that setup as Admin but 
+  then it DID NOT SWITCH BACK TO THE USER'S DESKTOP 
+* IATHook only hooks modules that actually use "CreateProcess"
+* IATHook uses InterlockedExchangePointer for better stability
+* Eclipse (JAVA) and SuRun's IAT Hook seem not to conflict anymore
+* The SuRun service uses uses a separate Thread to serve the Tray Icons
+
 SuRun 1.1.0.6 refresh - 2008-05-26:
 -----------------------------------
-* Win64 "SuRun /SYSMEUHOOK" did not start SuRun32.bin (Mutex)
+* Win64 "SuRun /SYSMENUHOOK" did not start SuRun32.bin (Mutex)
 * Dutch language resources, thanks to Stephan Paternotte
 
 SuRun 1.1.0.6 - 2008-04-29:
 ----------------------------
 * SuRun asks, if a user tries to restart the Windows Shell.
-* Removed "Administrators see SuRuns Setup Dialog on their desktop" feature for
+* Removed "Administrators see SuRun's Setup Dialog on their desktop" feature for
   two reasons: 
   1. The Settings dialog for normal users sometimes came up behind the blurred 
      background window. 
@@ -47,7 +280,7 @@ SuRun 1.1.0.6 - 2008-04-29:
 
 SuRun 1.1.0.5 - 2008-04-23:
 ----------------------------
-* Administrators see SuRuns Setup Dialog on their desktop
+* Administrators see SuRun's Setup Dialog on their desktop
 
 SuRun 1.1.0.4 - 2008-04-11:
 ----------------------------
@@ -56,7 +289,7 @@ SuRun 1.1.0.4 - 2008-04-11:
 
 SuRun 1.1.0.3 - 2008-04-11:
 ----------------------------
-* NEW: "SuRuns Settings" appears in the control panels category view in
+* NEW: "SuRun's Settings" appears in the control panels category view in
        "Performance and Maintenance"
 * NEW: SuRun displays "[Meaning: Explorer My Computer\Control Panel]" for shell 
        names like "Explorer ::{20D04FE0-3AEA-1069-A2D8-08002B30309D}\
@@ -71,14 +304,14 @@ SuRun 1.1.0.3 - 2008-04-11:
 * NEW: User file list "Add" and "Edit" shows the rule flags in a dialog
 * NEW: Initialise desktop background before and close it after SwitchDesktop
 * NEW: "Apply" Button in SuRun Settings
-* CHG: SuRuns IAT-Hook is turned ON by default
+* CHG: SuRun's IAT-Hook is turned ON by default
 * CHG: If Admin credentials are required, SuRun does not include Domain Admin 
        accounts in the drop down list
 * CHG: Double click in user list does "Edit" the command line
 * FIX: Scenario: Restircted SuRunner, changed password, SuRun asks to autorun 
        a predefined app with elevated rights, User presses 'Cancel'. Then the
        app was flagged "never start automagically".
-* FIX: SuRuns "Run as..." and Administrator authentication respect the 
+* FIX: SuRun's "Run as..." and Administrator authentication respect the 
        "Accounts: Limit local account use of blank passwords to console logon 
        only" group policy.
 * FIX: When using Sandboxie and the IAT-Hook, starting a sandboxed program 
@@ -87,7 +320,7 @@ SuRun 1.1.0.3 - 2008-04-11:
 * FIX: "'Explorer here' as admin" did not open the folder, when it had spaces 
        in the name
 * FIX: A user who was not allowed to change SuRun settings, could start the
-       control panel as admin and then change SuRuns settings.
+       control panel as admin and then change SuRun's settings.
 
 SuRun 1.1.0.2 - 2008-03-19:
 ----------------------------
@@ -100,13 +333,13 @@ SuRun 1.1.0.1 - 2008-03-11:
 
 SuRun 1.1.0.0 - 2008-03-10: (changes to SuRun 1.0.2.9)
 ----------------------------
-* SuRuns start menu entries were removed. 'SuRun Settings' and 'Uninstall 
+* SuRun's start menu entries were removed. 'SuRun Settings' and 'Uninstall 
   SuRun' can be done from the control panel.
 * SuRun Installation can be done from "InstallSuRun.exe". InstallSuRun contains
   both, the 32Bit and 64Bit version and automatically installs the correct 
   version for your OS.
   Installation/Update is Dialog based with options:
-    * "Do not change SuRuns file associations" on Update
+    * "Do not change SuRun's file associations" on Update
     * Run Setup after Install on first Install
     * Show "Set 'Administrators' instead of 'Object creator' as default owner 
       for objects created by administrators." when this was not set before.
@@ -147,13 +380,13 @@ SuRun 1.1.0.0 - 2008-03-10: (changes to SuRun 1.0.2.9)
 * Choosing "Don't ask this question again for this program" and pressing 
   cancel causes SuRun to auto-cancel all future requests to run this program
   with elevated rights.
-* Non 'SuRunners' will not see any of SuRuns Execution Hooks, System menu 
+* Non 'SuRunners' will not see any of SuRun's Execution Hooks, System menu 
   ((Re)Start as Administrator) or shell context menu (Control panel/cmd/
   Explorer as Administrator) entries.
 * New self made Control Panel Icon
 * SuRun tries to locate the Application to be started. So "surun cmd" will
   make ask SuRun whether "C:\Windows\System32\cmd.exe" is allowed to run.
-* SuRuns Shell integration can be customized.
+* SuRun's Shell integration can be customized.
 * SuRun waits for max 3 minutes after the Windows start for the Service.
 * New command line Option: /QUIET
 * New Commands. If the User right-clicks on a folder background, two new Items,
@@ -175,10 +408,10 @@ SuRun 1.0.2.110 - 2008-03-10: (Beta)
 SuRun 1.0.2.109 - 2008-03-02: (Beta)
 ----------------------------
 * New self made Control Panel Icon
-* The MIDL compiler sometimes did not work when SuRuns IAT-Hook was enabled.
+* The MIDL compiler sometimes did not work when SuRun's IAT-Hook was enabled.
   Now the Exec-Hooks do not allocate memory (calloc) anymore and MIDL works.
 * Installation/Update is Dialog based with options:
-  * "Do not change SuRuns file associations" on Update
+  * "Do not change SuRun's file associations" on Update
   * Run Setup after Install on first Install
   * Show "Set 'Administrators' instead of 'Object creator' as default owner 
     for objects created by administrators." when this was not set before.
@@ -315,14 +548,14 @@ SuRun 1.0.2.99 - 2008-01-06: (Beta)
 SuRun 1.0.2.98 - 2008-01-05: (Beta)
 ---------------------------
 * SuRun is now hidden from the frequently used program list of the Start menu
-* SuRuns file name pattern matching for files with SPACEs did not work.
+* SuRun's file name pattern matching for files with SPACEs did not work.
 
 SuRun 1.0.2.97 - 2008-01-04: (Beta)
 ---------------------------
 * fixed command line processing for "SuRun *.msi"
 * changed "'cmd <folder>' as administrator" and "'Explorer <folder>' as 
   administrator" to "'SuRun cmd' here" and "'SuRun Explorer' here"
-* Administrators will not see any of SuRuns System menu or shell menu entries
+* Administrators will not see any of SuRun's System menu or shell menu entries
 * Added parsing for Vista Manifests and Executable file name pattern matching.
   -All files with extension msi and msc and all files with extension exe, cmd, 
    lnk, com, pif, bat and a file name that contains install, setup or update 
@@ -373,7 +606,7 @@ SuRun 1.0.2.93 - 2007-12-07: (Beta)
     with elevated rights
   This enables to use SuRun in Parent/Children scenarios or in Companies where 
   real Administrators want to work with lowered rights.
-* SuRuns Shell integration can be customized.
+* SuRun's Shell integration can be customized.
 
 SuRun 1.0.2.9 - 2007-11-17:
 ---------------------------
@@ -387,9 +620,9 @@ SuRun 1.0.2.8 - 2007-10-11:
 ---------------------------
 * Added code to avoid Deadlock with AntiVir's RootKit detector "avipbb.sys" 
   that breaks OpenProcess()
-* Added code to recover SuRuns Desktop when user processes call SwitchDesktop()
+* Added code to recover SuRun's Desktop when user processes call SwitchDesktop
   "shedhlp.exe", part of Acronis True Image Home 11 calls SwitchDesktop() 
-  periodically and so switches from SuRuns Desktop back to the users Desktop.
+  periodically and so switches from SuRun's Desktop back to the users Desktop.
 
 SuRun 1.0.2.7 - 2007-09-21:
 ---------------------------

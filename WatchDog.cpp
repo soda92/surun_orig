@@ -51,6 +51,9 @@ private:
 // CWDMsgWnd
 //
 /////////////////////////////////////////////////////////////////////////////
+#ifdef DoDBGTrace
+extern RUNDATA g_RunData;
+#endif DoDBGTrace
 
 CWDMsgWnd::CWDMsgWnd(LPCTSTR Text,int IconId)
 {
@@ -221,20 +224,17 @@ void DoWatchDog(LPCTSTR SafeDesk,LPCTSTR UserDesk)
   HANDLE WatchDogEvent=OpenEvent(EVENT_ALL_ACCESS,0,WATCHDOG_EVENT_NAME);
   if (!WatchDogEvent)
     return;
-  HANDLE StayOnDeskEvent=OpenEvent(EVENT_ALL_ACCESS,0,STAYONDESK_EVENT_NAME);
   SetProcWinStaDesk(0,SafeDesk);
   for(;;)
   {
+    //Switch to SuRun's desktop
+    HDESK d=OpenDesktop(SafeDesk,0,FALSE,DESKTOP_SWITCHDESKTOP);
+    SwitchDesktop(d);
+    CloseDesktop(d);
     ResetEvent(WatchDogEvent);
     if ((WaitForSingleObject(WatchDogEvent,2000)==WAIT_TIMEOUT)
       && ShowWatchDogDlg(WatchDogEvent))
     {
-      //Switch to SuRuns desktop
-      HDESK d=OpenDesktop(SafeDesk,0,FALSE,DESKTOP_SWITCHDESKTOP);
-      SwitchDesktop(d);
-      CloseDesktop(d);
-      //Tell CStayOnDesk, not to switch to the safe desktop
-      ResetEvent(StayOnDeskEvent);
       //Set Access to the user Desktop
       HANDLE hTok=0;
       OpenProcessToken(GetCurrentProcess(),TOKEN_ALL_ACCESS,&hTok);
@@ -258,9 +258,7 @@ void DoWatchDog(LPCTSTR SafeDesk,LPCTSTR UserDesk)
       //Turn on Hooks if they where on!
       SetUseIShExHook(bIShHk);
       SetUseIATHook(bIATHk);
-      //Tell CStayOnDesk, to switch to the safe desktop
-      SetEvent(StayOnDeskEvent);
-      //Switch back to SuRuns desktop
+      //Switch back to SuRun's desktop
       d=OpenDesktop(SafeDesk,0,FALSE,DESKTOP_SWITCHDESKTOP);
       SwitchDesktop(d);
       CloseDesktop(d);

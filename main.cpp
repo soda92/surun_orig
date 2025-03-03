@@ -10,6 +10,10 @@
 // 
 //                                (c) Kay Bruns (http://kay-bruns.de), 2007,08
 //////////////////////////////////////////////////////////////////////////////
+#ifdef _DEBUG
+#define _DEBUGSETUP
+#endif _DEBUG
+
 #define _WIN32_WINNT 0x0500
 #define WINVER       0x0500
 #include <windows.h>
@@ -30,135 +34,42 @@
 
 #pragma comment(lib,"shlwapi.lib")
 #pragma comment(lib,"netapi32.lib")
-#ifndef _WIN64
-#pragma comment(linker,"/DELAYLOAD:advapi32.dll")
-#ifdef _SR32
-#pragma comment(linker,"/DELAYLOAD:surunext32.dll")
-#else _SR32
-#pragma comment(linker,"/DELAYLOAD:surunext.dll")
-#endif _SR32
-#pragma comment(linker,"/DELAYLOAD:mpr.dll")
-#pragma comment(linker,"/DELAYLOAD:version.dll")
-#pragma comment(linker,"/DELAYLOAD:comctl32.dll")
-#pragma comment(linker,"/DELAYLOAD:userenv.dll")
-#pragma comment(linker,"/DELAYLOAD:comdlg32.dll")
-#pragma comment(linker,"/DELAYLOAD:gdi32.dll")
-#pragma comment(linker,"/DELAYLOAD:user32.dll")
-#pragma comment(linker,"/DELAYLOAD:shell32.dll")
-#pragma comment(linker,"/DELAYLOAD:shlwapi.dll")
-#pragma comment(linker,"/DELAYLOAD:ole32.dll")
-#pragma comment(linker,"/DELAYLOAD:netapi32.dll")
-#pragma comment(linker,"/DELAYLOAD:psapi.dll")
-#pragma comment(lib,"Delayimp")
-#endif _WIN64
 
-//////////////////////////////////////////////////////////////////////////////
-// 
-//  KillProcessNice
-// 
-//////////////////////////////////////////////////////////////////////////////
-// callback function for window enumeration
-static BOOL CALLBACK CloseAppEnum(HWND hwnd,LPARAM lParam )
-{
-  DWORD dwID ;
-  GetWindowThreadProcessId(hwnd, &dwID) ;
-  if(dwID==(DWORD)lParam)
-    PostMessage(hwnd,WM_CLOSE,0,0) ;
-  return TRUE ;
-}
-
-void KillProcessNice(DWORD PID)
-{
-  if (!PID)
-    return;
-  HANDLE hProcess=OpenProcess(SYNCHRONIZE,TRUE,PID);
-  if(!hProcess)
-    return;
-  //Post WM_CLOSE to all Windows of PID
-  EnumWindows(CloseAppEnum,(LPARAM)PID);
-  //Give the Process time to close
-  WaitForSingleObject(hProcess,2500);
-  CloseHandle(hProcess);
-  //The service will call TerminateProcess()...
-}
-
-//////////////////////////////////////////////////////////////////////////////
-// 
-//  Run()...the Trampoline
-// 
-//////////////////////////////////////////////////////////////////////////////
-int Run()
-{
-  PROCESS_INFORMATION pi={0};
-  STARTUPINFO si={0};
-  si.cb = sizeof(STARTUPINFO);
-  TCHAR un[2*UNLEN+2]={0};
-  TCHAR dn[2*UNLEN+2]={0};
-  _tcscpy(un,g_RunData.UserName);
-  PathStripPath(un);
-  _tcscpy(dn,g_RunData.UserName);
-  PathRemoveFileSpec(dn);
-  //Create the process suspended to revoke access for the current user 
-  //before it starts runnung
-  if(!CreateProcessWithLogonW(un,dn,g_RunPwd,LOGON_WITH_PROFILE,NULL,
-    g_RunData.cmdLine,CREATE_UNICODE_ENVIRONMENT|CREATE_SUSPENDED,NULL,
-    g_RunData.CurDir,&si,&pi))
-  {
-    //Clear sensitive Data
-    return zero(g_RunPwd),RETVAL_ACCESSDENIED;
-  }
-  //Clear sensitive Data
-  zero(g_RunPwd);
-  //Allow access to the Process and Thread to the Administrators and deny 
-  //access for the current user
-  SetAdminDenyUserAccess(pi.hThread);
-  SetAdminDenyUserAccess(pi.hProcess);
-  //Start the main thread
-  ResumeThread(pi.hThread);
-  //Ok, we're done with the handles:
-  CloseHandle(pi.hThread);
-  CloseHandle(pi.hProcess);
-  //ShellExec-Hook: We must return the PID and TID to fake CreateProcess:
-  if((g_RunData.RetPID)&&(g_RunData.RetPtr))
-  {
-    pi.hThread=0;
-    pi.hProcess=0;
-    HANDLE hProcess=OpenProcess(PROCESS_VM_OPERATION|PROCESS_VM_WRITE,FALSE,g_RunData.RetPID);
-    if (hProcess)
-    {
-      SIZE_T n;
-      if (!WriteProcessMemory(hProcess,(LPVOID)g_RunData.RetPtr,&pi,sizeof(PROCESS_INFORMATION),&n))
-        DBGTrace2("AutoSuRun(%s) WriteProcessMemory failed: %s",
-          g_RunData.cmdLine,GetLastErrorNameStatic());
-      CloseHandle(hProcess);
-    }else
-      DBGTrace2("AutoSuRun(%s) OpenProcess failed: %s",
-        g_RunData.cmdLine,GetLastErrorNameStatic());
-  }
-  zero(g_RunData);
-  return RETVAL_OK;
-}
-
+extern RUNDATA g_RunData;
 
 //////////////////////////////////////////////////////////////////////////////
 //
 // WinMain
 //
 //////////////////////////////////////////////////////////////////////////////
+
+//#ifdef _DEBUG
+//#include "LSALogon.h"
+//extern BOOL TestSetup();
+//#endif _DEBUG
+
 int WINAPI WinMain(HINSTANCE hInst,HINSTANCE hPrevInst,LPSTR lpCmdLine,int nCmdShow)
 {
+  switch (GetRegInt(HKLM,SURUNKEY,L"Language",0))
+  {
+  case 1:
+    SetThreadLocale(MAKELCID(MAKELANGID(LANG_GERMAN,SUBLANG_GERMAN),SORT_DEFAULT));
+    break;
+  case 2:
+    SetThreadLocale(MAKELCID(MAKELANGID(LANG_ENGLISH,SUBLANG_ENGLISH_US),SORT_DEFAULT));
+    break;
+  case 3:
+    SetThreadLocale(MAKELCID(MAKELANGID(LANG_DUTCH,SUBLANG_DUTCH),SORT_DEFAULT));
+    break;
+  }
+#ifdef _DEBUG
+//  GetAdminToken(0);
+//  TestSetup();
+//  UserIsInSuRunnersOrAdmins();
+//  ExitProcess(0);
+#endif _DEBUG
   if(HandleServiceStuff())
     return 0;
-  //After the User presses OK, the service starts a clean SuRun exe with the 
-  //Clients user token, it fills g_RunData and g_RunPwd
-  //We must Do this for two reasons:
-  //1. CreateProcessWithLogonW does not work directly from the service
-  //2. IAT-Hookers may have infect the Client-SuRun.exe and intercept
-  //   CreateProcessWithLogonW. If SuRun.exe is directly started from the 
-  //   service, no common injection methods will work.
-  if (g_RunData.CliProcessId==GetCurrentProcessId())
-    //Started from services:
-    return Run();
   if (g_RunData.CliThreadId==GetCurrentThreadId())
   {
     //Started from services:
@@ -178,63 +89,75 @@ int WINAPI WinMain(HINSTANCE hInst,HINSTANCE hPrevInst,LPSTR lpCmdLine,int nCmdS
   GetDesktopName(g_RunData.Desk,countof(g_RunData.Desk));
   //UserName
   GetProcessUserName(g_RunData.CliProcessId,g_RunData.UserName);
+  //Groups
+  g_RunData.Groups=UserIsInSuRunnersOrAdmins();
   //Current Directory
   GetCurrentDirectory(countof(g_RunData.CurDir),g_RunData.CurDir);
   NetworkPathToUNCPath(g_RunData.CurDir);
-  //cmdLine
-  LPTSTR Args=PathGetArgs(GetCommandLine());
-  //Parse direct commands:
   bool bRunSetup=FALSE;
-  while (Args[0]=='/')
+  //cmdLine
   {
-    LPTSTR c=Args;
-    Args=PathGetArgs(Args);
-    if (*(Args-1)==' ')
-      *(Args-1)=0;
-    if (!_wcsicmp(c,L"/QUIET"))
-    {
+    LPTSTR args=_tcsdup(PathGetArgs(GetCommandLine()));
+    LPTSTR Args=args;
+    //Parse direct commands:
+    if (HideSuRun(g_RunData.UserName,g_RunData.Groups))
       g_RunData.beQuiet=TRUE;
-    }if (!_wcsicmp(c,L"/RUNAS"))
+    while (Args[0]=='/')
     {
-      g_RunData.bRunAs=TRUE;
-    }else if (!_wcsicmp(c,L"/SETUP"))
-    {
-      bRunSetup=TRUE;
-      wcscpy(g_RunData.cmdLine,L"/SETUP");
-      break;
-    }else if (!_wcsicmp(c,L"/TESTAA"))
-    {
-      g_RunData.bShlExHook=TRUE;
-      //ShellExec-Hook: We must return the PID and TID to fake CreateProcess:
-      g_RunData.RetPID=wcstol(Args,0,10);
+      LPTSTR c=Args;
       Args=PathGetArgs(Args);
-      g_RunData.RetPtr=wcstoul(Args,0,16);
-      Args=PathGetArgs(Args);
-    }else if (!_wcsicmp(c,L"/KILL"))
-    {
-      g_RunData.KillPID=wcstol(Args,0,10);
-      Args=PathGetArgs(Args);
-      KillProcessNice(g_RunData.KillPID);
+      if (*(Args-1)==' ')
+        *(Args-1)=0;
+      if (!_wcsicmp(c,L"/QUIET"))
+      {
+        g_RunData.beQuiet=TRUE;
+      }else if (!_wcsicmp(c,L"/RUNAS"))
+      {
+        g_RunData.bRunAs=TRUE;
+      }else if (!_wcsicmp(c,L"/SETUP"))
+      {
+        bRunSetup=TRUE;
+        wcscpy(g_RunData.cmdLine,L"/SETUP");
+        break;
+      }else if (!_wcsicmp(c,L"/TESTAA"))
+      {
+        g_RunData.bShlExHook=TRUE;
+        //ShellExec-Hook: We must return the PID and TID to fake CreateProcess:
+        g_RunData.RetPID=wcstol(Args,0,10);
+        Args=PathGetArgs(Args);
+        g_RunData.RetPtr=wcstoul(Args,0,16);
+        Args=PathGetArgs(Args);
+      }else if (!_wcsicmp(c,L"/KILL"))
+      {
+        g_RunData.KillPID=wcstol(Args,0,10);
+        Args=PathGetArgs(Args);
+      }else
+      {
+        //Usage
+        //SafeMsgBox(0,CBigResStr(IDS_USAGE),CResStr(IDS_APPNAME),MB_ICONSTOP);
+        return g_RunData.bShlExHook?RETVAL_SX_NOTINLIST:RETVAL_ACCESSDENIED;
+      }
     }
-  }
-  bool bShellIsadmin=FALSE;
-  HANDLE hTok=GetShellProcessToken();
-  if(hTok)
-  {
-    bShellIsadmin=IsAdmin(hTok)!=0;
-    CloseHandle(hTok);
-  }
-  //Convert Command Line
-  if (!bRunSetup)
-  {
-    //If shell is Admin but User is SuRunner, the Shell must be restarted
-    if (IsInSuRunners(g_RunData.UserName) && bShellIsadmin)
+    bool bShellIsadmin=FALSE;
+    HANDLE hTok=GetShellProcessToken();
+    if(hTok)
     {
-      //Complain if shell user is an admin!
-      SafeMsgBox(0,CResStr(IDS_ADMINSHELL),CResStr(IDS_APPNAME),MB_ICONEXCLAMATION|MB_SETFOREGROUND);
-      return RETVAL_ACCESSDENIED;
-    }  
-    ResolveCommandLine(Args,g_RunData.CurDir,g_RunData.cmdLine);
+      bShellIsadmin=IsAdmin(hTok)!=0;
+      CloseHandle(hTok);
+    }
+    //Convert Command Line
+    if (!bRunSetup)
+    {
+      //If shell is Admin but User is SuRunner, the Shell must be restarted
+      if (g_CliIsInSuRunners && bShellIsadmin)
+      {
+        //Complain if shell user is an admin!
+        SafeMsgBox(0,CResStr(IDS_ADMINSHELL),CResStr(IDS_APPNAME),MB_ICONEXCLAMATION|MB_SETFOREGROUND);
+        return RETVAL_ACCESSDENIED;
+      }  
+      ResolveCommandLine(Args,g_RunData.CurDir,g_RunData.cmdLine);
+    }
+    free(args);
   }
   //Usage
   if (!g_RunData.cmdLine[0])
@@ -246,11 +169,6 @@ int WINAPI WinMain(HINSTANCE hInst,HINSTANCE hPrevInst,LPSTR lpCmdLine,int nCmdS
   //Lets go:
   g_RetVal=RETVAL_WAIT;
   HANDLE hPipe=INVALID_HANDLE_VALUE;
-  //To start control Panel and other Explorer children we need to tell 
-  //Explorer to start a new Process, because the Shell updates the state 
-  //from the registry and this cant' be forced to be done "now", the
-  //"SeparateProcess" registry value must be set early an remain set
-  SetSeparateProcess(1);
   //retry if the pipe is busy: (max 240s)
   for(int i=0;i<720;i++)
   {

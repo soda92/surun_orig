@@ -31,16 +31,6 @@
 
 #pragma comment(lib,"PSAPI")
 #pragma comment(lib,"shlwapi")
-#ifndef _WIN64
-#pragma comment(linker,"/DELAYLOAD:user32.dll")
-#pragma comment(linker,"/DELAYLOAD:gdi32.dll")
-#pragma comment(linker,"/DELAYLOAD:netapi32.dll")
-#pragma comment(linker,"/DELAYLOAD:ole32.dll")
-#pragma comment(linker,"/DELAYLOAD:shell32.dll")
-#pragma comment(linker,"/DELAYLOAD:psapi.dll")
-#pragma comment(linker,"/DELAYLOAD:shlwapi.dll")
-#pragma comment(lib,"Delayimp")
-#endif _WIN64
 
 //////////////////////////////////////////////////////////////////////////////
 //
@@ -56,43 +46,97 @@ HHOOK       g_hookMenu  = NULL;
 #pragma comment(linker, "/section:.SHDATA,RWS")
 
 extern HINSTANCE l_hInst; //the local Dll instance
+extern TCHAR     l_User[514];  //the Process user Name
+extern DWORD     l_Groups;
+#define     l_IsAdmin     ((l_Groups&IS_IN_ADMINS)!=0)
+#define     l_IsSuRunner  ((l_Groups&IS_IN_SURUNNERS)!=0)
+
 
 extern UINT      WM_SYSMH0;
 extern UINT      WM_SYSMH1;
+
+BOOL g_IsShell=-1;
+BOOL IsShell()
+{
+  if (g_IsShell!=-1)
+    return g_IsShell;
+  DWORD ShellID=0;
+  GetWindowThreadProcessId(GetShellWindow(),&ShellID);
+  g_IsShell=GetCurrentProcessId()==ShellID;
+  return g_IsShell;
+}
+
+UINT GetMenuItemType(HMENU m,int pos)
+{
+  MENUITEMINFO mii={0};
+  mii.cbSize=sizeof(mii);
+  mii.fMask=MIIM_FTYPE;
+  GetMenuItemInfo(m,pos,TRUE,&mii);
+  return mii.fType;
+}
+
+int FindSCClose(HMENU m)
+{
+  //return position of SC_CLOSE in menu.
+  //Insert Separator before SC_CLOSE if no separator precedes it
+  for (int i=0;i<GetMenuItemCount(m)&&(GetMenuItemID(m,i)!=SC_CLOSE);i++);
+  if(i && ((GetMenuItemType(m,i-1)&MFT_SEPARATOR)==0))
+    InsertMenu(m,i++,MF_SEPARATOR|MF_BYPOSITION,WM_SYSMH0,0);
+  return i;
+}
 
 LRESULT CALLBACK ShellProc(int nCode, WPARAM wParam, LPARAM lParam)
 {
   if(nCode>=0)
   {
     #define wps ((CWPSTRUCT*)lParam)
+    #define hmenu (HMENU)wps->wParam
     switch(wps->message)
     {
     case WM_MENUSELECT:
       if((wps->lParam==NULL)&&(HIWORD(wps->wParam)==0xFFFF))
       {
-        RemoveMenu(GetSystemMenu(wps->hwnd,FALSE),WM_SYSMH0,MF_BYCOMMAND);
-        RemoveMenu(GetSystemMenu(wps->hwnd,FALSE),WM_SYSMH1,MF_BYCOMMAND);
+        HMENU m=GetSystemMenu(wps->hwnd,FALSE);
+        //Two menu items and two separators can be in Sysmenu, remove them:
+        RemoveMenu(m,WM_SYSMH0,MF_BYCOMMAND);
+        RemoveMenu(m,WM_SYSMH0,MF_BYCOMMAND);
+        RemoveMenu(m,WM_SYSMH1,MF_BYCOMMAND);
+        RemoveMenu(m,WM_SYSMH1,MF_BYCOMMAND);
       }
       break;
-    case WM_CONTEXTMENU:
-      //Load the System menu for the Window, if we don't, we'll get a default 
-      //system menu on the first click.
-      GetSystemMenu((HWND)wps->wParam,FALSE);
+    //Load the System menu for the Window, if we don't, we'll get a default 
+    //system menu on the first click.
+    case WM_CREATE:
+    case WM_INITDIALOG:
+      GetSystemMenu((HWND)wps->hwnd,FALSE);
       break;
     case WM_INITMENUPOPUP:
       if ((HIWORD(wps->lParam)==TRUE) 
-        && IsMenu((HMENU)wps->wParam) 
-        && (!IsAdmin()))
+        && IsMenu(hmenu) 
+        && (!l_IsAdmin)
+        && (!GetHideFromUser(l_User)))
       {
-        if( GetRestartAsAdmin
-        && (GetMenuState((HMENU)wps->wParam,WM_SYSMH0,MF_BYCOMMAND)==(UINT)-1))
-          AppendMenu((HMENU)wps->wParam,MF_STRING,WM_SYSMH0,CResStr(l_hInst,IDS_MENURESTART));
+        int i=0;
+        if( GetRestartAsAdmin 
+        && (!IsShell())
+        && (GetMenuState(hmenu,WM_SYSMH0,MF_BYCOMMAND)==(UINT)-1))
+        {
+          i=FindSCClose(hmenu);
+          InsertMenu(hmenu,i++,MF_BYPOSITION,WM_SYSMH0,CResStr(l_hInst,IDS_MENURESTART));
+        }
         if( GetStartAsAdmin
-        && (GetMenuState((HMENU)wps->wParam,WM_SYSMH1,MF_BYCOMMAND)==(UINT)-1))
-          AppendMenu((HMENU)wps->wParam,MF_STRING,WM_SYSMH1,CResStr(l_hInst,IDS_MENUSTART));
+        && (GetMenuState(hmenu,WM_SYSMH1,MF_BYCOMMAND)==(UINT)-1))
+        {
+          if (i==0)
+            i=FindSCClose(hmenu);
+          InsertMenu(hmenu,i++,MF_BYPOSITION,WM_SYSMH1,CResStr(l_hInst,IDS_MENUSTART));
+        }
+        if (i)
+          InsertMenu(hmenu,i,MF_SEPARATOR|MF_BYPOSITION,WM_SYSMH1,0);
       }
       break;
     }
+    #undef hmenu
     #undef wps
   }
   return CallNextHookEx(g_hookShell, nCode, wParam, lParam);
@@ -112,16 +156,9 @@ LRESULT CALLBACK MenuProc(int nCode, WPARAM wParam, LPARAM lParam)
     PathAppend(cmd, _T("SuRun.exe"));
     PathQuoteSpaces(cmd);
     _tcscat(cmd,_T(" "));
-    TCHAR PID[10];
     if (msg->wParam==WM_SYSMH0)
     {
-      //Are we inside the Shell Process?
-      DWORD ShellID=0;
-      GetWindowThreadProcessId(GetShellWindow(),&ShellID);
-      if ((GetCurrentProcessId()==ShellID)
-        &&(SafeMsgBox(0,CResStr(l_hInst,IDS_RESTARTSHELL,GetCommandLine()),
-                      L"SuRun",MB_ICONQUESTION|MB_YESNO|MB_DEFBUTTON2)==IDNO))
-        return CallNextHookEx(g_hookMenu, nCode, wParam, lParam);
+      TCHAR PID[10];
       _tcscat(cmd,_T("/KILL "));
       _tcscat(cmd,_itot(GetCurrentProcessId(),PID,10));
       _tcscat(cmd,_T(" "));
@@ -131,8 +168,6 @@ LRESULT CALLBACK MenuProc(int nCode, WPARAM wParam, LPARAM lParam)
     {
       CloseHandle(pi.hProcess);
       CloseHandle(pi.hThread);
-      if (msg->wParam==WM_SYSMH0)
-        ::ExitProcess(0);
     }else
       SafeMsgBox(msg->hwnd,CResStr(l_hInst,IDS_FILENOTFOUND),0,MB_ICONSTOP);
     //We processed the Message: Stop calling other hooks!

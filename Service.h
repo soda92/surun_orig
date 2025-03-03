@@ -32,20 +32,8 @@ typedef struct
   TCHAR WinSta[MAX_PATH];
   TCHAR Desk[MAX_PATH];
   TCHAR UserName[UNLEN+UNLEN+2];
-  union
-  {
-    struct //Normal
-    {
-      TCHAR cmdLine[4096];
-      TCHAR CurDir[4096];
-    };
-    struct //TrayShowAdmin
-    {
-      DWORD CurProcId;
-      TCHAR CurUserName[UNLEN+GNLEN+2];
-      BOOL CurUserIsadmin;
-    };
-  };
+  TCHAR cmdLine[4096];
+  TCHAR CurDir[4096];
   DWORD KillPID; //SuRun->Service: Process Id to be killed
   union
   {
@@ -63,19 +51,18 @@ typedef struct
   bool  bShlExHook;
   bool  beQuiet;
   bool  bRunAs;
-  bool  bTrayShowAdmin;
+  DWORD Groups;         //IS_IN_ADMINS,IS_IN_SURUNNERS
 }RUNDATA;
+
+#define g_CliIsInAdmins    ((g_RunData.Groups&IS_IN_ADMINS)!=0)
+#define g_CliIsInSuRunners ((g_RunData.Groups&IS_IN_SURUNNERS)!=0)
 
 extern bool g_CliIsAdmin;
 
 //This is used to verify that SuRun.exe started by the user is the same as 
 //the Service process
-extern RUNDATA g_RunData;
 
-//The service copies the users password via WriteProcessMemory to g_RunPwd of 
-//SuRun.exe that was started by the user
-extern TCHAR g_RunPwd[PWLEN];
-
+#define RETVAL_NODESKTOP   -2
 #define RETVAL_WAIT        -1
 #define RETVAL_OK           0
 #define RETVAL_ACCESSDENIED 1

@@ -20,8 +20,12 @@
 #include <ShlGuid.h>
 #include <lm.h>
 #include <MMSYSTEM.H>
+#include <WtsApi32.h>
+#include <Tlhelp32.h>
 
 #include "Helpers.h"
+#include "lsa_laar.h"
+#include "UserGroups.h"
 #include "DBGTRace.h"
 
 #pragma comment(lib,"ShlWapi.lib")
@@ -31,22 +35,34 @@
 #pragma comment(lib,"ole32.lib")
 #pragma comment(lib,"Version.lib")
 #pragma comment(lib,"WINMM.LIB")
+#pragma comment(lib,"Wtsapi32")
 
 //////////////////////////////////////////////////////////////////////////////
 //
 //  Registry Helper
 //
 //////////////////////////////////////////////////////////////////////////////
-
 BOOL GetRegAny(HKEY HK,LPCTSTR SubKey,LPCTSTR ValName,DWORD Type,BYTE* RetVal,DWORD* nBytes)
 {
   HKEY Key;
-  if (RegOpenKeyEx(HK,SubKey,0,KEY_READ,&Key)==ERROR_SUCCESS)
+  if (RegOpenKeyEx(HK,SubKey,0,KSAM(KEY_READ),&Key)==ERROR_SUCCESS)
   {
     DWORD dwType=Type;
     BOOL bRet=(RegQueryValueEx(Key,ValName,NULL,&dwType,RetVal,nBytes)==ERROR_SUCCESS)
             &&(dwType==Type);
-      RegCloseKey(Key);
+    RegCloseKey(Key);
+    return bRet;
+  }
+  return FALSE;
+}
+
+BOOL GetRegAnyPtr(HKEY HK,LPCTSTR SubKey,LPCTSTR ValName,DWORD* Type,BYTE* RetVal,DWORD* nBytes)
+{
+  HKEY Key;
+  if (RegOpenKeyEx(HK,SubKey,0,KSAM(KEY_READ),&Key)==ERROR_SUCCESS)
+  {
+    BOOL bRet=RegQueryValueEx(Key,ValName,NULL,Type,RetVal,nBytes)==ERROR_SUCCESS;
+    RegCloseKey(Key);
     return bRet;
   }
   return FALSE;
@@ -56,9 +72,9 @@ BOOL SetRegAny(HKEY HK,LPCTSTR SubKey,LPCTSTR ValName,DWORD Type,BYTE* Data,DWOR
 {
   HKEY Key;
   BOOL bKey=FALSE;
-  bKey=RegOpenKeyEx(HK,SubKey,0,KEY_WRITE,&Key)==ERROR_SUCCESS;
+  bKey=RegOpenKeyEx(HK,SubKey,0,KSAM(KEY_WRITE),&Key)==ERROR_SUCCESS;
   if (!bKey)
-    bKey=RegCreateKey(HK,SubKey,&Key)==ERROR_SUCCESS;
+    bKey=RegCreateKeyEx(HK,SubKey,0,0,0,KSAM(KEY_WRITE),0,&Key,0)==ERROR_SUCCESS;
   if (bKey)
   {
     LONG l=RegSetValueEx(Key,ValName,0,Type,Data,nBytes);
@@ -71,7 +87,7 @@ BOOL SetRegAny(HKEY HK,LPCTSTR SubKey,LPCTSTR ValName,DWORD Type,BYTE* Data,DWOR
 BOOL RegDelVal(HKEY HK,LPCTSTR SubKey,LPCTSTR ValName)
 {
   HKEY Key;
-  if (RegOpenKeyEx(HK,SubKey,0,KEY_WRITE,&Key)==ERROR_SUCCESS)
+  if (RegOpenKeyEx(HK,SubKey,0,KSAM(KEY_WRITE),&Key)==ERROR_SUCCESS)
   {
     BOOL bRet=RegDeleteValue(Key,ValName)==ERROR_SUCCESS;
     RegCloseKey(Key);
@@ -82,7 +98,7 @@ BOOL RegDelVal(HKEY HK,LPCTSTR SubKey,LPCTSTR ValName)
 
 DWORD GetRegInt(HKEY HK,LPCTSTR SubKey,LPCTSTR ValName,DWORD Default)
 {
-  DWORD RetVal=0;
+  DWORD RetVal=Default;
   DWORD n=sizeof(RetVal);
   if (GetRegAny(HK,SubKey,ValName,REG_DWORD,(BYTE*)&RetVal,&n))
     return RetVal;
@@ -96,7 +112,7 @@ BOOL SetRegInt(HKEY HK,LPCTSTR SubKey,LPCTSTR ValName,DWORD Value)
 
 __int64 GetRegInt64(HKEY HK,LPCTSTR SubKey,LPCTSTR ValName,__int64 Default)
 {
-  __int64 RetVal=0;
+  __int64 RetVal=Default;
   DWORD n=sizeof(RetVal);
   if (GetRegAny(HK,SubKey,ValName,REG_BINARY,(BYTE*)&RetVal,&n))
     return RetVal;
@@ -127,7 +143,7 @@ BOOL SetRegStr(HKEY HK,LPCTSTR SubKey,LPCTSTR ValName,LPCTSTR Value)
 BOOL RegEnum(HKEY HK,LPCTSTR SubKey,int Index,LPTSTR Str,DWORD ccMax)
 {
   HKEY Key;
-  if (RegOpenKeyEx(HK,SubKey,0,KEY_READ,&Key)==ERROR_SUCCESS)
+  if (RegOpenKeyEx(HK,SubKey,0,KSAM(KEY_READ),&Key)==ERROR_SUCCESS)
   {
     BOOL bRet=(RegEnumKey(Key,Index,Str,ccMax)==ERROR_SUCCESS);
     RegCloseKey(Key);
@@ -139,7 +155,7 @@ BOOL RegEnum(HKEY HK,LPCTSTR SubKey,int Index,LPTSTR Str,DWORD ccMax)
 BOOL RegEnumValName(HKEY HK,LPTSTR SubKey,int Index,LPTSTR Str,DWORD ccMax)
 {
   HKEY Key;
-  if (RegOpenKeyEx(HK,SubKey,0,KEY_READ,&Key)==ERROR_SUCCESS)
+  if (RegOpenKeyEx(HK,SubKey,0,KSAM(KEY_READ),&Key)==ERROR_SUCCESS)
   {
     BOOL bRet=(RegEnumValue(Key,Index,Str,&ccMax,0,0,0,0)==ERROR_SUCCESS);
     RegCloseKey(Key);
@@ -151,7 +167,7 @@ BOOL RegEnumValName(HKEY HK,LPTSTR SubKey,int Index,LPTSTR Str,DWORD ccMax)
 BOOL DelRegKey(HKEY hKey,LPTSTR pszSubKey)
 {
   HKEY hEnumKey;
-  if(RegOpenKeyEx(hKey,pszSubKey,0,KEY_ENUMERATE_SUB_KEYS,&hEnumKey)!=NOERROR)
+  if(RegOpenKeyEx(hKey,pszSubKey,0,KSAM(KEY_ENUMERATE_SUB_KEYS),&hEnumKey)!=NOERROR)
     return FALSE;
   TCHAR szKey[4096];
   DWORD dwSize = 4096;
@@ -162,6 +178,22 @@ BOOL DelRegKey(HKEY hKey,LPTSTR pszSubKey)
   }
   RegCloseKey(hEnumKey);
   RegDeleteKey(hKey, pszSubKey);
+  return TRUE;
+}
+
+BOOL DelRegKeyChildren(HKEY hKey,LPTSTR pszSubKey)
+{
+  HKEY hEnumKey;
+  if(RegOpenKeyEx(hKey,pszSubKey,0,KSAM(KEY_ENUMERATE_SUB_KEYS),&hEnumKey)!=NOERROR)
+    return FALSE;
+  TCHAR szKey[4096];
+  DWORD dwSize = 4096;
+  while (ERROR_SUCCESS==RegEnumKeyEx(hEnumKey,0,szKey,&dwSize,0,0,0,0))
+  {
+    DelRegKey(hEnumKey, szKey);
+    dwSize=4096;
+  }
+  RegCloseKey(hEnumKey);
   return TRUE;
 }
 
@@ -176,9 +208,9 @@ void CopyRegKey(HKEY hSrc, HKEY hDst)
   for(i=0,nS=512;0==RegEnumKey(hSrc,i,s,nS);i++)
   {
     HKEY newDst,newSrc;
-    if(0==RegOpenKey(hSrc,s,&newSrc))
+    if(0==RegOpenKeyEx(hSrc,s,0,KSAM(KEY_ALL_ACCESS),&newSrc))
     {
-      if(0==RegCreateKey(hDst,s,&newDst))
+      if(0==RegCreateKeyEx(hDst,s,0,0,0,KSAM(KEY_ALL_ACCESS),0,&newDst,0))
       {
         CopyRegKey(newSrc,newDst);
         RegCloseKey(newDst);
@@ -192,9 +224,9 @@ void CopyRegKey(HKEY hSrc, HKEY hDst)
 BOOL RenameRegKey(HKEY hKeyRoot,LPTSTR sSrc,LPTSTR sDst)
 {
   HKEY hSrc,hDst;
-  if(RegOpenKey(hKeyRoot,sSrc,&hSrc))
+  if(RegOpenKeyEx(hKeyRoot,sSrc,0,KSAM(KEY_ALL_ACCESS),&hSrc))
     return FALSE;
-  if(RegCreateKey(hKeyRoot,sDst,&hDst))
+  if(RegCreateKeyEx(hKeyRoot,sDst,0,0,0,KSAM(KEY_ALL_ACCESS),0,&hDst,0))
     return RegCloseKey(hSrc),FALSE;
   CopyRegKey(hSrc,hDst);
   RegCloseKey(hDst);
@@ -209,9 +241,14 @@ BOOL RenameRegKey(HKEY hKeyRoot,LPTSTR sSrc,LPTSTR sDst)
 // 
 //////////////////////////////////////////////////////////////////////////////
 
-BOOL EnablePrivilege(HANDLE hToken,LPCTSTR name)
+BOOL DisablePrivilege(HANDLE hToken,LPCTSTR name)
 {
-  TOKEN_PRIVILEGES priv = {1,{0,0,SE_PRIVILEGE_ENABLED}};
+  return  EnablePrivilege(hToken,name,0);
+}
+
+BOOL EnablePrivilege(HANDLE hToken,LPCTSTR name,DWORD how/*=SE_PRIVILEGE_ENABLED*/)
+{
+  TOKEN_PRIVILEGES priv = {1,{0,0,how}};
   LookupPrivilegeValue(0,name,&priv.Privileges[0].Luid);
   AdjustTokenPrivileges(hToken,FALSE,&priv,sizeof priv,0,0);
   return  GetLastError() == ERROR_SUCCESS;
@@ -346,7 +383,10 @@ BOOL HasRegistryKeyAccess(LPTSTR KeyName,LPTSTR Account)
   // Initialize an EXPLICIT_ACCESS structure for an ACE.
   BuildTrusteeWithName(&tr,Account);
   if (GetEffectiveRightsFromAcl(pDACL,&tr,&am)!=ERROR_SUCCESS)
+  {
     DBGTrace1( "GetEffectiveRightsFromAcl failed %s\n", GetErrorNameStatic(dwRes));
+    am=0;
+  }
 Cleanup:
   if(pSD != NULL) 
     LocalFree((HLOCAL) pSD); 
@@ -355,59 +395,86 @@ Cleanup:
   return (am&KEY_WRITE)==KEY_WRITE;
 }
 
+BOOL HasRegistryKeyAccess(LPTSTR KeyName,DWORD Rid)
+{
+  DWORD cchG=GNLEN;
+  WCHAR Group[GNLEN+1]={0};
+  if (GetGroupName(Rid,Group,&cchG))
+    return HasRegistryKeyAccess(KeyName,Group);
+  return false;
+}
+
+void SetRegistryTreeAccess(LPTSTR KeyName,DWORD Rid,bool bAllow)
+{
+  DWORD cchG=GNLEN;
+  WCHAR Group[GNLEN+1]={0};
+  if (GetGroupName(Rid,Group,&cchG))
+    SetRegistryTreeAccess(KeyName,Group,bAllow);
+}
+
 //////////////////////////////////////////////////////////////////////////////
 //
 // SetAdminDenyUserAccess
 //
 //////////////////////////////////////////////////////////////////////////////
-
-void SetAdminDenyUserAccess(HANDLE hObject,DWORD ProcessID/*=0*/,DWORD Permissions/*=SYNCHRONIZE*/)
+PACL SetAdminDenyUserAccess(PACL pOldDACL,PSID UserSID,DWORD Permissions/*=SYNCHRONIZE*/)
 {
-  DWORD dwRes;
-  PACL pOldDACL=NULL, pNewDACL=NULL;
-  PSECURITY_DESCRIPTOR pSD = NULL;
-  EXPLICIT_ACCESS ea[2]={0};
   SID_IDENTIFIER_AUTHORITY AdminSidAuthority = SECURITY_NT_AUTHORITY;
   PSID AdminSID = NULL;
-  if (ProcessID==0)
-    ProcessID=GetCurrentProcessId();
-  PSID UserSID  = GetProcessUserSID(ProcessID);
-  if (NULL == hObject) 
-    goto Cleanup; 
-  // Get a pointer to the existing DACL.
-  dwRes = GetSecurityInfo(hObject,SE_KERNEL_OBJECT,DACL_SECURITY_INFORMATION,NULL,NULL,&pOldDACL,NULL,&pSD);
-  if (ERROR_SUCCESS != dwRes) 
-    goto Cleanup; 
-
   // Initialize Admin SID
   if (!AllocateAndInitializeSid(&AdminSidAuthority,2,SECURITY_BUILTIN_DOMAIN_RID,
     DOMAIN_ALIAS_RID_ADMINS,0,0,0,0,0,0,&AdminSID))
-    goto Cleanup; 
+    return 0; 
   // Initialize EXPLICIT_ACCESS structures
-  // The ACE will allow Administrators full access to the object.
-  ea[0].grfAccessPermissions = STANDARD_RIGHTS_ALL|SPECIFIC_RIGHTS_ALL;
-  ea[0].grfAccessMode = GRANT_ACCESS;
-  ea[0].Trustee.ptstrName  = (LPTSTR)AdminSID;
+  EXPLICIT_ACCESS ea[2]={0};
   // The ACE will deny the current User access to the object.
-  ea[1].grfAccessPermissions = Permissions;
-  ea[1].grfAccessMode = SET_ACCESS;
-  ea[1].Trustee.ptstrName  = (LPTSTR)UserSID;
+  ea[0].grfAccessPermissions = Permissions;
+  ea[0].grfAccessMode = SET_ACCESS;
+  ea[0].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+  ea[0].Trustee.ptstrName  = (LPTSTR)UserSID;
+  // The ACE will allow Administrators full access to the object.
+  ea[1].grfAccessPermissions = STANDARD_RIGHTS_ALL|SPECIFIC_RIGHTS_ALL;
+  ea[1].grfAccessMode = GRANT_ACCESS;
+  ea[0].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+  ea[1].Trustee.ptstrName  = (LPTSTR)AdminSID;
   // Create a new ACL that merges the new ACE
   // into the existing DACL.
-  dwRes = SetEntriesInAcl(2,&ea[0],pOldDACL,&pNewDACL);
-  if (ERROR_SUCCESS != dwRes)  
-    goto Cleanup; 
-  // Attach the new ACL as the object's DACL.
-  dwRes = SetSecurityInfo(hObject,SE_KERNEL_OBJECT,DACL_SECURITY_INFORMATION,NULL,NULL,pNewDACL,NULL);
-  if (ERROR_SUCCESS != dwRes)  
-    goto Cleanup; 
-Cleanup:
-  if(pSD != NULL) 
-    LocalFree((HLOCAL) pSD); 
-  if(pNewDACL != NULL) 
-    LocalFree((HLOCAL) pNewDACL); 
+  PACL pNewDACL=NULL;
+  SetEntriesInAcl(2,&ea[0],pOldDACL,&pNewDACL);
   if (AdminSID)
     FreeSid(AdminSID);
+  return pNewDACL;
+}
+
+void SetAdminDenyUserAccess(HANDLE hObject,PSID UserSID,DWORD Permissions/*=SYNCHRONIZE*/)
+{
+  if (NULL == hObject) 
+    return; 
+  PACL pOldDACL=NULL;
+  PSECURITY_DESCRIPTOR pSD = NULL;
+  // Get a pointer to the existing DACL.
+  if (0==GetSecurityInfo(hObject,SE_KERNEL_OBJECT,DACL_SECURITY_INFORMATION,NULL,NULL,&pOldDACL,NULL,&pSD)) 
+  {
+    PACL pNewDACL=SetAdminDenyUserAccess(pOldDACL,UserSID,Permissions/*=SYNCHRONIZE*/);
+    // Attach the new ACL as the object's DACL.
+    if (pNewDACL)
+    {
+      SetSecurityInfo(hObject,SE_KERNEL_OBJECT,DACL_SECURITY_INFORMATION,NULL,NULL,pNewDACL,NULL);
+      LocalFree((HLOCAL)pNewDACL); 
+    }
+  }
+  if(pSD != NULL) 
+    LocalFree((HLOCAL) pSD); 
+}
+
+void SetAdminDenyUserAccess(HANDLE hObject,DWORD ProcessID/*=0*/,DWORD Permissions/*=SYNCHRONIZE*/)
+{
+  if (ProcessID==0)
+    ProcessID=GetCurrentProcessId();
+  PSID UserSID=GetProcessUserSID(ProcessID);
+  if (!UserSID)
+    return;
+  SetAdminDenyUserAccess(hObject,UserSID,Permissions);
   free(UserSID);
 }
 
@@ -445,13 +512,13 @@ PSECURITY_DESCRIPTOR GetUserAccessSD()
   pSDret=(PSECURITY_DESCRIPTOR)LocalAlloc(LPTR,SDlen);
   if(!MakeSelfRelativeSD(pSD,pSDret,&SDlen))
     goto Cleanup;
-  LocalFree(pUserSID);
+  free(pUserSID);
   LocalFree(pACL);
   LocalFree(pSD);
   return pSDret;
 Cleanup:
   if (pUserSID) 
-    LocalFree(pUserSID);
+    free(pUserSID);
   if (pACL) 
     LocalFree(pACL);
   if (pSD) 
@@ -674,10 +741,10 @@ BOOL ResolveCommandLine(IN LPWSTR CmdLine,IN LPCWSTR CurDir,OUT LPTSTR cmd)
     PathAppend(app,L"explorer.exe");
     if (LOBYTE(LOWORD(GetVersion()))<6)
       //2k/XP: Control Panel is beneath "my computer"!
-      wcscpy(args,L"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\::{21EC2020-3AEA-1069-A2DD-08002B30309D}");
+      wcscpy(args,L"/n, ::{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\::{21EC2020-3AEA-1069-A2DD-08002B30309D}");
     else
       //Vista: Control Panel is beneath desktop!
-      wcscpy(args,L"::{21EC2020-3AEA-1069-A2DD-08002B30309D}");
+      wcscpy(args,L"/n, ::{21EC2020-3AEA-1069-A2DD-08002B30309D}");
   }else if (((!_wcsicmp(app,L"ncpa.cpl")) && (args[0]==0))
     ||(fExist && (!_wcsicmp(path,SysDir)) && (!_wcsicmp(file,L"ncpa")) && (!_wcsicmp(ext,L".cpl"))))
   {
@@ -685,10 +752,10 @@ BOOL ResolveCommandLine(IN LPWSTR CmdLine,IN LPCWSTR CurDir,OUT LPTSTR cmd)
     PathAppend(app,L"explorer.exe");
     if (LOBYTE(LOWORD(GetVersion()))<6)
       //2k/XP: Control Panel is beneath "my computer"!
-      wcscpy(args,L"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\::{21EC2020-3AEA-1069-A2DD-08002B30309D}\\::{7007ACC7-3202-11D1-AAD2-00805FC1270E}");
+      wcscpy(args,L"/n, ::{20D04FE0-3AEA-1069-A2D8-08002B30309D}\\::{21EC2020-3AEA-1069-A2DD-08002B30309D}\\::{7007ACC7-3202-11D1-AAD2-00805FC1270E}");
     else
       //Vista: Control Panel is beneath desktop!
-      wcscpy(args,L"::{21EC2020-3AEA-1069-A2DD-08002B30309D}\\::{7007ACC7-3202-11D1-AAD2-00805FC1270E}");
+      wcscpy(args,L"/n, ::{21EC2020-3AEA-1069-A2DD-08002B30309D}\\::{7007ACC7-3202-11D1-AAD2-00805FC1270E}");
   }else 
   //*.reg files
   if (!_wcsicmp(ext, L".reg")) 
@@ -899,6 +966,34 @@ bool GetTokenUserName(HANDLE hUser,LPTSTR User,LPTSTR Domain/*=0*/)
 
 //////////////////////////////////////////////////////////////////////////////
 // 
+// GetTokenUserSID
+// 
+//////////////////////////////////////////////////////////////////////////////
+
+PSID GetTokenUserSID(HANDLE hToken)
+{
+  PSID sid=0;
+  DWORD dwLen=0;
+  if ((GetTokenInformation(hToken, TokenUser,NULL,0,&dwLen))
+    ||(GetLastError()==ERROR_INSUFFICIENT_BUFFER))
+  {
+    TOKEN_USER* ptu=(TOKEN_USER*)malloc(dwLen);
+    if(ptu)
+    {
+      if(GetTokenInformation(hToken,TokenUser,(PVOID)ptu,dwLen,&dwLen))
+      {
+        dwLen=GetLengthSid(ptu->User.Sid);
+        sid=(PSID)malloc(dwLen);
+        CopySid(dwLen,sid,ptu->User.Sid);
+      }
+      free(ptu);
+    }
+  }
+  return sid;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// 
 // GetProcessUserSID
 // 
 //////////////////////////////////////////////////////////////////////////////
@@ -914,22 +1009,7 @@ PSID GetProcessUserSID(DWORD ProcessID)
   // Open impersonation token for process
   if (OpenProcessToken(hProc,TOKEN_QUERY,&hToken))
   {
-    DWORD dwLen=0;
-    if ((GetTokenInformation(hToken, TokenUser,NULL,0,&dwLen))
-      ||(GetLastError()==ERROR_INSUFFICIENT_BUFFER))
-    {
-      TOKEN_USER* ptu=(TOKEN_USER*)malloc(dwLen);
-      if(ptu)
-      {
-        if(GetTokenInformation(hToken,TokenUser,(PVOID)ptu,dwLen,&dwLen))
-        {
-          dwLen=GetLengthSid(ptu->User.Sid);
-          sid=(PSID)malloc(dwLen);
-          CopySid(dwLen,sid,ptu->User.Sid);
-        }
-        free(ptu);
-      }
-    }
+    sid=GetTokenUserSID(hToken);
     CloseHandle(hToken);
   }
   CloseHandle(hProc);
@@ -979,6 +1059,243 @@ HANDLE GetShellProcessToken()
   OpenProcessToken(hShell,TOKEN_DUPLICATE,&hTok);
   CloseHandle(hShell);
   return hTok;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+//
+//  GetProcessID
+//
+//  Get the Process ID for a file name. Filename is stripped to the bones e.g.
+//  "Explorer.exe" instead of "C:\Windows\Explorer.exe"
+//  If there are multiple "Explorer.exe"s running in your Logon session, the
+//  function will return the ID of the first Process it finds.
+//
+//  The purpose of this function ist primarily to get the Process ID of the
+//  Shell process.
+//////////////////////////////////////////////////////////////////////////////
+
+DWORD GetProcessID(LPCTSTR ProcName,DWORD SessID=-1)
+{
+  if (SessID!=(DWORD)-1)
+  {
+    //Terminal Services:
+    DWORD nProcesses=0;
+    WTS_PROCESS_INFO* pwtspi=0;
+    WTSEnumerateProcesses(WTS_CURRENT_SERVER_HANDLE,0,1,&pwtspi,&nProcesses);
+    for (DWORD Process=0;Process<nProcesses;Process++) 
+    {
+      if (pwtspi[Process].SessionId!=SessID)
+        continue;
+      TCHAR PName[MAX_PATH]={0};
+      _tcscpy(PName,pwtspi[Process].pProcessName);
+      PathStripPath(PName);
+      if (_tcsicmp(ProcName,PName)==0)
+        return WTSFreeMemory(pwtspi), pwtspi[Process].ProcessId;
+    }
+    WTSFreeMemory(pwtspi);
+  }
+  //ToolHelp
+  HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0);
+  if (hSnap==INVALID_HANDLE_VALUE)
+    return 0; 
+  DWORD dwRet=0;
+  PROCESSENTRY32 pe={0};
+  pe.dwSize = sizeof(PROCESSENTRY32);
+  bool bFirst=true;
+  while((bFirst?Process32First(hSnap,&pe):Process32Next(hSnap,&pe)))
+  {
+    bFirst=false;
+    PathStripPath(pe.szExeFile);
+    if(_tcsicmp(ProcName,pe.szExeFile)!=0) 
+      continue;
+    if ((SessID!=(DWORD)-1))
+    {
+      ULONG s=-2;
+      if ((!ProcessIdToSessionId(pe.th32ProcessID,&s))||(s!=SessID))
+        continue;
+    }
+    dwRet=pe.th32ProcessID;
+    break;
+  }
+  CloseHandle(hSnap);
+  return dwRet;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// 
+// GetTokenGroups
+// 
+//////////////////////////////////////////////////////////////////////////////
+
+PTOKEN_GROUPS	GetTokenGroups(HANDLE hToken)
+{
+	DWORD	cbBuffer  = 0;
+	PTOKEN_GROUPS	ptgGroups = NULL;
+	GetTokenInformation(hToken, TokenGroups, NULL, cbBuffer, &cbBuffer);
+	if (cbBuffer)
+		ptgGroups=(PTOKEN_GROUPS)malloc(cbBuffer);
+  if (ptgGroups)
+    GetTokenInformation(hToken,TokenGroups,ptgGroups,cbBuffer,&cbBuffer);
+  return ptgGroups;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// 
+// FindLogonSID
+// 
+//////////////////////////////////////////////////////////////////////////////
+
+PSID FindLogonSID(PTOKEN_GROUPS	ptg)
+{
+  for(UINT i=0;i<ptg->GroupCount;i++)
+    if(((ptg->Groups[i].Attributes & SE_GROUP_LOGON_ID)==SE_GROUP_LOGON_ID)
+      &&(IsValidSid(ptg->Groups[i].Sid)))
+        return ptg->Groups[i].Sid;
+  return 0;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// 
+// GetLogonSid ...copies the SID from FindLogonSID to a new buffer
+// 
+//////////////////////////////////////////////////////////////////////////////
+
+PSID GetLogonSid(HANDLE hToken)
+{
+	PTOKEN_GROUPS	ptgGroups = GetTokenGroups(hToken);
+  if (!ptgGroups)
+    return 0;
+  PSID sid=FindLogonSID(ptgGroups);
+  if (sid)
+  {
+    DWORD dwSidLength=GetLengthSid(sid);
+    PSID pLogonSid=(PSID)malloc(dwSidLength);
+    if (pLogonSid)
+    {
+      if (CopySid(dwSidLength,pLogonSid,sid))
+      {
+        free(ptgGroups);
+        return pLogonSid;
+      }
+      free(pLogonSid);
+    }
+  }
+  free(ptgGroups);
+	return 0;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// 
+// UserIsInSuRunnersOrAdmins
+// 
+//////////////////////////////////////////////////////////////////////////////
+
+DWORD UserIsInSuRunnersOrAdmins()
+{
+  HANDLE hToken=NULL;
+  if (!OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&hToken))
+    return 0;
+	PTOKEN_GROUPS	ptg = GetTokenGroups(hToken);
+  CloseHandle(hToken);
+  if (!ptg)
+    return 0;
+  SID_IDENTIFIER_AUTHORITY AdminSidAuthority = SECURITY_NT_AUTHORITY;
+  PSID AdminSID = NULL;
+  // Initialize Admin SID
+  if (!AllocateAndInitializeSid(&AdminSidAuthority,2,SECURITY_BUILTIN_DOMAIN_RID,
+    DOMAIN_ALIAS_RID_ADMINS,0,0,0,0,0,0,&AdminSID))
+    return free(ptg),0; 
+  PSID SuRunnersSID=GetAccountSID(SURUNNERSGROUP);
+  DWORD dwRet=0;
+  for(UINT i=0;i<ptg->GroupCount;i++)
+    if((ptg->Groups[i].Attributes & SE_GROUP_ENABLED|SE_GROUP_ENABLED_BY_DEFAULT|SE_GROUP_MANDATORY)
+      &&(IsValidSid(ptg->Groups[i].Sid)))
+    {
+      if(EqualSid(ptg->Groups[i].Sid,AdminSID))
+        dwRet|=IS_IN_ADMINS;
+      else if(SuRunnersSID && EqualSid(ptg->Groups[i].Sid,SuRunnersSID))
+        dwRet|=IS_IN_SURUNNERS;
+    }
+
+  FreeSid(AdminSID);
+  free(SuRunnersSID);
+  free(ptg);
+	return dwRet;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+//
+//  GetSessionUserToken
+//
+//  This function tries to use WTSQueryUserToken to get the token of the 
+//  currently logged on user. If the WTSQueryUserToken method fails, we'll
+//  try to steal the user token of the logon sessions shell process.
+//////////////////////////////////////////////////////////////////////////////
+
+HANDLE GetSessionUserToken(DWORD SessID)
+{
+  //WTSQueryUserToken is present in WinXP++, load it dynamically
+  typedef BOOL (WINAPI* wtsqut)(ULONG,PHANDLE);
+  static wtsqut wtsqueryusertoken=NULL;
+  if (!wtsqueryusertoken)
+  {
+    HINSTANCE wtsapi32=LoadLibrary(_T("wtsapi32.dll"));
+    if (wtsapi32)
+      wtsqueryusertoken=(wtsqut)GetProcAddress(wtsapi32,"WTSQueryUserToken");
+  }
+  HANDLE hToken = NULL;
+  //SE_TCB_NAME is only present in a local System User Token
+  //WTSQueryUserToken requires SE_TCB_NAME!
+  if ((!wtsqueryusertoken)
+    ||(!EnablePrivilege(SE_TCB_NAME))
+    ||(!wtsqueryusertoken(SessID,&hToken))
+    ||(hToken==NULL))
+  {
+    //No WTSQueryUserToken: we're in Win2k
+    //Get the Shells Name
+    TCHAR Shell[MAX_PATH];
+    if (!GetRegStr(HKEY_LOCAL_MACHINE,_T("SOFTWARE\\Microsoft\\Windows NT\\")
+                   _T("CurrentVersion\\Winlogon"),_T("Shell"),Shell,MAX_PATH))
+      return 0;
+    PathRemoveArgs(Shell);
+    PathStripPath(Shell);
+    //Now get the Shells Process ID
+    DWORD ShellID=GetProcessID(Shell,SessID);
+    if (!ShellID)
+      return 0;
+    //We got the Shells Process ID, now get the user token
+    EnablePrivilege(SE_DEBUG_NAME);
+    HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS,TRUE,ShellID);
+    if (!hProc)
+      return 0;
+    // Open impersonation token for Shell process
+    OpenProcessToken(hProc,TOKEN_IMPERSONATE|TOKEN_QUERY|TOKEN_DUPLICATE
+                          |TOKEN_ASSIGN_PRIMARY,&hToken);
+    CloseHandle(hProc);
+    if(!hToken)
+      return 0;
+  }
+  HANDLE hTokenDup=NULL;
+  DuplicateTokenEx(hToken,MAXIMUM_ALLOWED,NULL,SecurityIdentification,
+                          TokenPrimary,&hTokenDup); 
+  CloseHandle(hToken);
+  return hTokenDup;
+}
+
+//////////////////////////////////////////////////////////////////////////////
+//
+//  GetSessionLogonSID
+//
+//////////////////////////////////////////////////////////////////////////////
+
+PSID GetSessionLogonSID(DWORD SessionID)
+{
+  HANDLE hToken=GetSessionUserToken(SessionID);
+  if (!hToken)
+    return 0;
+  PSID p=GetLogonSid(hToken);
+  CloseHandle(hToken);
+  return p;
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -1075,4 +1392,47 @@ DWORD CTimeOut::Rest()
 bool CTimeOut::TimedOut()
 {
   return Rest()==0;
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// 
+// strwldcmp returns true if s matches pattern case insensitive
+// pattern may contain '*' and '?' as wildcards
+// '?' any "one" character in s match
+// '*' any "zero or more" characters in s match
+// e.G. strwldcmp("Test me","t*S*") strwldcmp("Test me","t?S*e") would match
+//
+/////////////////////////////////////////////////////////////////////////////
+
+bool strwldcmp(LPCTSTR s, LPCTSTR pattern) 
+{
+  if ((!s) || (!pattern))
+    return false;
+  while (*pattern)
+  {
+    if (*s==0)
+      return (*pattern=='*')&&(pattern[1]==0);
+    //ignore case; skip, if pattern is '?'
+    if ((toupper(*s)==toupper(*pattern))||(*pattern=='?'))
+    {
+      s++;
+      pattern++;
+    }else if (*pattern=='*') 
+    {
+      pattern++;
+      //nothing after '*', ok for any string
+      if (*pattern==0)
+        return true;
+      //pattern contains something after '*', string needs to have a match
+      while(*s)
+      {
+        if (strwldcmp(s,pattern))
+          return true;
+        s++;
+      }
+      return false;
+    }else
+      return false;
+  }
+  return *s==0;
 }
