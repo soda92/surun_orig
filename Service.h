@@ -15,6 +15,7 @@
 // The service bootstraps itself before WinMain gats called
 
 #pragma once
+#include <LMCons.h>
 
 //This is the pipe named used to get the SuRun command to the service
 #define ServicePipeName _T("\\\\.\\Pipe\\SuperUserRun")
@@ -59,7 +60,6 @@ typedef struct
       DWORD TimeOut;    //Service->Tray Window timeout
     };
   };
-  bool  bNoSafeDesk; //only valid with /SETUP
   bool  bShlExHook;
   bool  beQuiet;
   bool  bRunAs;

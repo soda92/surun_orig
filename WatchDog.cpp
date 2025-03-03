@@ -10,89 +10,58 @@
 // 
 //                                (c) Kay Bruns (http://kay-bruns.de), 2007,08
 //////////////////////////////////////////////////////////////////////////////
+
 #define _WIN32_WINNT 0x0500
 #define WINVER       0x0500
 #include <windows.h>
-#include <tchar.h>
-#include "TrayMsgWnd.h"
-#include "Helpers.h"
+#include "DBGTrace.h"
+#include "Service.h"
 #include "Setup.h"
+#include "WinstaDesk.h"
+
 #include "Resource.h"
 
-#define Classname _T("SRTRMSGWND")
+#define Classname _T("SRWDMSGWND")
 /////////////////////////////////////////////////////////////////////////////
 //
-// CTrayMsgWnd window
+// CWDMsgWnd window
 //
 /////////////////////////////////////////////////////////////////////////////
 
-class CTrayMsgWnd
+class CWDMsgWnd
 {
 public:
-	CTrayMsgWnd(LPCTSTR DlgTitle,LPCTSTR Text,int IconId,DWORD TimeOut);
-	~CTrayMsgWnd();
+	CWDMsgWnd(LPCTSTR Text,int IconId);
+	~CWDMsgWnd();
   bool MsgLoop();
-  HWND m_hWnd;
 protected:
-  UINT WM_SRTRMSGWNDCLOSED;
-  UINT WM_SRTRMSGWNDGETPOS;
+  bool m_Clicked;
+  HWND m_hWnd;
   HFONT m_hFont;
   HBRUSH m_bkBrush;
   RECT m_wr;
-  int m_DoSlide;
   HICON m_Icon;
 private:
   static LRESULT CALLBACK WindowProc(HWND hWnd,UINT msg,WPARAM wParam,LPARAM lParam);
   LRESULT CALLBACK WinProc(UINT msg,WPARAM wParam,LPARAM lParam);
-private:
-  void MoveAboveOthers()
-  {
-    //CTimeLog l(L"MoveAboveOthers");
-    SendMessageCallback(HWND_BROADCAST,WM_SRTRMSGWNDGETPOS,0,0,MaxYProc,(ULONG_PTR)this);
-    int y=m_wr.bottom;
-    CTimeOut t(100);
-    //Wait 100ms until y does not change
-    while (!t.TimedOut())
-    {
-      MSG msg;
-      while (PeekMessage(&msg,0,0,0,PM_REMOVE))
-      {
-        TranslateMessage(&msg);
-        DispatchMessage(&msg);
-      }
-      if(y!=m_wr.bottom)
-      {
-        y=m_wr.bottom;
-        t.Set(100);
-      }
-    }
-  }
-  static VOID CALLBACK MaxYProc(HWND hwnd,UINT uMsg,ULONG_PTR dwData,LRESULT lResult)
-  {
-    if(LOWORD(lResult)==10131)
-      ((CTrayMsgWnd*)dwData)->MaxYProc(HIWORD(lResult));
-  }
-  VOID CALLBACK MaxYProc(int y)
-  {
-    if (m_wr.bottom>y)
-      OffsetRect(&m_wr,0,y-m_wr.bottom);
-  }
 };
 
 /////////////////////////////////////////////////////////////////////////////
 //
-// CTrayMsgWnd
+// CWDMsgWnd
 //
 /////////////////////////////////////////////////////////////////////////////
 
-CTrayMsgWnd::CTrayMsgWnd(LPCTSTR DlgTitle,LPCTSTR Text,int IconId,DWORD TimeOut)
+CWDMsgWnd::CWDMsgWnd(LPCTSTR Text,int IconId)
 {
+#ifdef DoDBGTrace
+  GetWinStaName(g_RunData.WinSta,countof(g_RunData.WinSta));
+  GetDesktopName(g_RunData.Desk,countof(g_RunData.Desk));
+  DBGTrace2("CWDMsgWnd() on %s\\%s",g_RunData.WinSta,g_RunData.Desk);
+#endif DoDBGTrace
+  m_Clicked=FALSE;
   LoadLibrary(_T("Shell32.dll"));//Load Shell Window Classes
   m_Icon=(HICON)LoadImage(GetModuleHandle(0),MAKEINTRESOURCE(IconId),IMAGE_ICON,16,16,0);
-
-  WM_SRTRMSGWNDCLOSED=RegisterWindowMessage(_T("WM_SRTRMSGWNDCLOSED"));
-  WM_SRTRMSGWNDGETPOS=RegisterWindowMessage(_T("WM_SRTRMSGWNDGETPOS"));
-  m_DoSlide=0;
   m_hFont=CreateFont(-14,0,0,0,FW_MEDIUM,0,0,0,0,0,0,0,0,_T("MS Shell Dlg"));
   {
     //Desktop Rect
@@ -122,18 +91,20 @@ CTrayMsgWnd::CTrayMsgWnd(LPCTSTR DlgTitle,LPCTSTR Text,int IconId,DWORD TimeOut)
     m_wr.bottom+=2*GetSystemMetrics(SM_CYDLGFRAME)+GetSystemMetrics(SM_CYSMCAPTION)+10;
     OffsetRect(&m_wr,rd.right-m_wr.right+m_wr.left,rd.bottom-m_wr.bottom+m_wr.top);
   }
-  //Get Position:
-  MoveAboveOthers();
   m_bkBrush=CreateSolidBrush(GetSysColor(COLOR_WINDOW));
   WNDCLASS wc={0};
-  wc.lpfnWndProc=CTrayMsgWnd::WindowProc;
+  wc.lpfnWndProc=CWDMsgWnd::WindowProc;
   wc.lpszClassName=Classname;
   wc.hbrBackground=m_bkBrush;
   RegisterClass(&wc);
   m_hWnd=CreateWindowEx(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|WS_EX_TOPMOST,
-    Classname,DlgTitle,WS_VISIBLE|WS_CAPTION|WS_SYSMENU|WS_BORDER,
+    Classname,_T("SuRun"),WS_VISIBLE|WS_DLGFRAME,
     m_wr.left,m_wr.top,m_wr.right-m_wr.left,m_wr.bottom-m_wr.top,
     0,0,0,(LPVOID)this);
+  if (!m_hWnd)
+    DBGTrace("No Window!")
+  else
+    DBGTrace4("Window at %d,%d,%d,%d",m_wr.left,m_wr.top,m_wr.right-m_wr.left,m_wr.bottom-m_wr.top);
   SetWindowLongPtr(m_hWnd,GWLP_USERDATA,(LONG_PTR)this);
   RECT cr;
   GetClientRect(m_hWnd,&cr);
@@ -152,15 +123,13 @@ CTrayMsgWnd::CTrayMsgWnd(LPCTSTR DlgTitle,LPCTSTR Text,int IconId,DWORD TimeOut)
   s=CreateWindowEx(0,_T("Static"),Text,WS_CHILD|WS_VISIBLE|SS_NOPREFIX,
     cr.left,cr.top,cr.right-cr.left,cr.bottom-cr.top,m_hWnd,0,0,0);
   SendMessage(s,WM_SETFONT,(WPARAM)m_hFont,1);
-  if (TimeOut)
-    SetTimer(m_hWnd,2,TimeOut,0);
   InvalidateRect(m_hWnd,0,1);
   UpdateWindow(m_hWnd);
   MsgLoop();
   SetWindowPos(m_hWnd,0,m_wr.left,m_wr.top,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
 }
 
-CTrayMsgWnd::~CTrayMsgWnd()
+CWDMsgWnd::~CWDMsgWnd()
 {
   if (IsWindow(m_hWnd))
     DestroyWindow(m_hWnd);
@@ -169,10 +138,15 @@ CTrayMsgWnd::~CTrayMsgWnd()
   DeleteObject(m_bkBrush);
 }
 
-bool CTrayMsgWnd::MsgLoop()
+bool CWDMsgWnd::MsgLoop()
 {
-  if (!IsWindow(m_hWnd))
+  if (m_Clicked)
     return FALSE;
+  if (!IsWindow(m_hWnd))
+  {
+    DBGTrace("No Window!");
+    return FALSE;
+  }
   MSG msg;
   while (PeekMessage(&msg,0,0,0,PM_REMOVE))
   {
@@ -182,26 +156,20 @@ bool CTrayMsgWnd::MsgLoop()
   return TRUE;
 }
 
-LRESULT CALLBACK CTrayMsgWnd::WindowProc(HWND hWnd,UINT msg,WPARAM wParam,LPARAM lParam)
+LRESULT CALLBACK CWDMsgWnd::WindowProc(HWND hWnd,UINT msg,WPARAM wParam,LPARAM lParam)
 {
-  CTrayMsgWnd* sw=(CTrayMsgWnd*)GetWindowLongPtr(hWnd,GWLP_USERDATA);
+  CWDMsgWnd* sw=(CWDMsgWnd*)GetWindowLongPtr(hWnd,GWLP_USERDATA);
   if (sw)
     return sw->WinProc(msg,wParam,lParam);
   return DefWindowProc(hWnd,msg,wParam,lParam);
 }
 
-LRESULT CALLBACK CTrayMsgWnd::WinProc(UINT msg,WPARAM wParam,LPARAM lParam)
+LRESULT CALLBACK CWDMsgWnd::WinProc(UINT msg,WPARAM wParam,LPARAM lParam)
 {
   switch (msg)
   {
   case WM_CLOSE:
-    {
-      KillTimer(m_hWnd,1);
-      KillTimer(m_hWnd,2);
-      SendNotifyMessage(HWND_BROADCAST,WM_SRTRMSGWNDCLOSED,
-        MAKELONG(m_wr.left,m_wr.top),MAKELONG(m_wr.right,m_wr.bottom));
-      DestroyWindow(m_hWnd);
-    }
+    DestroyWindow(m_hWnd);
     return 0;
   case WM_CTLCOLORSTATIC:
     SetBkMode((HDC)wParam,TRANSPARENT);
@@ -210,59 +178,99 @@ LRESULT CALLBACK CTrayMsgWnd::WinProc(UINT msg,WPARAM wParam,LPARAM lParam)
   case WM_MOVING:
 	  *((RECT*)lParam)=m_wr;
     return TRUE;
-  case WM_TIMER:
-    if (wParam==2)
-    {
-      KillTimer(m_hWnd,2);
-      PostMessage(m_hWnd,WM_CLOSE,0,0);
-    }else
-    if (wParam==1)
-    {
-      if (m_DoSlide)
-      {
-        OffsetRect(&m_wr,0,min(5,m_DoSlide));
-        SetWindowPos(m_hWnd,0,m_wr.left,m_wr.top,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
-        m_DoSlide-=5;
-      }
-      if (m_DoSlide<=0)
-      {
-        m_DoSlide=0;
-        KillTimer(m_hWnd,1);
-      }
-    }
-    return 0;
-  default:
-    if (msg==WM_SRTRMSGWNDGETPOS)
-      return MAKELONG(10131,m_wr.top);
-    if (msg==WM_SRTRMSGWNDCLOSED)
-    {
-      int t=HIWORD(wParam);
-      int b=HIWORD(lParam);
-      if (m_wr.bottom<=t)
-      {
-        m_DoSlide+=b-t; 
-        SetTimer(m_hWnd,1,10,0);
-      }
-      return 1;
-    }
+  case WM_QUERYENDSESSION://Block LogOff!
+    return (lParam&ENDSESSION_LOGOFF)?FALSE:TRUE;
+  case WM_LBUTTONDOWN:
+    m_Clicked=TRUE;
+    //fall through
   }
   return DefWindowProc(m_hWnd,msg,wParam,lParam);
 }
 
 /////////////////////////////////////////////////////////////////////////////
 //
-//Public Message Functions:
+//
 //
 /////////////////////////////////////////////////////////////////////////////
-void TrayMsgWnd(LPCTSTR DlgTitle,LPCTSTR Message,int IconId,DWORD TimeOut)
+
+//return true if user wants to switch
+BOOL ShowWatchDogDlg(HANDLE WatchDogEvent)
 {
-  if (!GetShowAutoRuns)
-    return;
-  CTrayMsgWnd* w=new CTrayMsgWnd(DlgTitle,Message,IconId,TimeOut);
-  int prio=GetThreadPriority(GetCurrentThread());
-  SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_IDLE);
-  while (w->MsgLoop())
-    Sleep(10);
-  SetThreadPriority(GetCurrentThread(),prio);
+  BOOL bRet=FALSE;
+  CWDMsgWnd* w=new CWDMsgWnd(CBigResStr(IDS_SURUNSTUCK),IDI_SHIELD2);
+  while (WaitForSingleObject(WatchDogEvent,0)==WAIT_TIMEOUT)
+  {
+    if (!w->MsgLoop())
+    {
+      bRet=TRUE;
+      break;
+    }
+  }
   delete w;
+  return bRet;
+}
+
+void DoWatchDog(LPCTSTR SafeDesk,LPCTSTR UserDesk)
+{
+#ifdef DoDBGTrace
+  GetWinStaName(g_RunData.WinSta,countof(g_RunData.WinSta));
+  GetDesktopName(g_RunData.Desk,countof(g_RunData.Desk));
+  DBGTrace4("DoWatchDog(%s,%s) on %s\\%s",
+    SafeDesk,UserDesk,g_RunData.WinSta,g_RunData.Desk);
+#endif DoDBGTrace
+  HANDLE WatchDogEvent=OpenEvent(EVENT_ALL_ACCESS,0,WATCHDOG_EVENT_NAME);
+  if (!WatchDogEvent)
+    return;
+  HANDLE StayOnDeskEvent=OpenEvent(EVENT_ALL_ACCESS,0,STAYONDESK_EVENT_NAME);
+  SetProcWinStaDesk(0,SafeDesk);
+  for(;;)
+  {
+    ResetEvent(WatchDogEvent);
+    if ((WaitForSingleObject(WatchDogEvent,2000)==WAIT_TIMEOUT)
+      && ShowWatchDogDlg(WatchDogEvent))
+    {
+      //Switch to SuRuns desktop
+      HDESK d=OpenDesktop(SafeDesk,0,FALSE,DESKTOP_SWITCHDESKTOP);
+      SwitchDesktop(d);
+      CloseDesktop(d);
+      //Tell CStayOnDesk, not to switch to the safe desktop
+      ResetEvent(StayOnDeskEvent);
+      //Set Access to the user Desktop
+      HANDLE hTok=0;
+      OpenProcessToken(GetCurrentProcess(),TOKEN_ALL_ACCESS,&hTok);
+      SetAccessToWinDesk(hTok,0,UserDesk,true);
+      SetProcWinStaDesk(0,UserDesk);
+      //Turn off Hooks when displaying the user desktop!
+      DWORD bIATHk=GetUseIATHook;
+      DWORD bIShHk=GetUseIShExHook;
+      SetUseIATHook(0);
+      SetUseIShExHook(0);
+      //Switch to the user desktop
+      d=OpenDesktop(UserDesk,0,FALSE,DESKTOP_SWITCHDESKTOP);
+      SwitchDesktop(d);
+      CloseDesktop(d);
+      //Show Window
+      CWDMsgWnd* w=new CWDMsgWnd(CBigResStr(IDS_SWITCHBACK),IDI_SHIELD);
+      while (w->MsgLoop())
+        Sleep(10);
+      delete w;
+      w=0;
+      //Turn on Hooks if they where on!
+      SetUseIShExHook(bIShHk);
+      SetUseIATHook(bIATHk);
+      //Tell CStayOnDesk, to switch to the safe desktop
+      SetEvent(StayOnDeskEvent);
+      //Switch back to SuRuns desktop
+      d=OpenDesktop(SafeDesk,0,FALSE,DESKTOP_SWITCHDESKTOP);
+      SwitchDesktop(d);
+      CloseDesktop(d);
+      //Revoke access from user desktop
+      SetProcWinStaDesk(0,SafeDesk);
+      SetAccessToWinDesk(hTok,0,UserDesk,false);
+      CloseHandle(hTok);
+      hTok=0;
+    }
+  }
+  //DoWatchDog never returns! 
+  //SuRun uses TerminateProcess() in DeleteSafeDesktop
 }

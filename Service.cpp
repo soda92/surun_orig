@@ -43,6 +43,7 @@
 #include "ReqAdmin.h"
 #include "Helpers.h"
 #include "TrayShowAdmin.h"
+#include "WatchDog.h"
 #include "DBGTrace.h"
 #include "Resource.h"
 #include "SuRunExt/SuRunExt.h"
@@ -667,7 +668,7 @@ DWORD PrepareSuRun()
   if (g_CliIsAdmin || IsInWhiteList(g_RunData.UserName,g_RunData.cmdLine,FLAG_DONTASK))
     return UpdLastRunTime(g_RunData.UserName),RETVAL_OK;
   //Create the new desktop
-  if (CreateSafeDesktop(g_RunData.WinSta,GetBlurDesk,GetFadeDesk))
+  if (CreateSafeDesktop(g_RunData.WinSta,g_RunData.Desk,GetBlurDesk,GetFadeDesk))
   {
     __try
     {
@@ -1044,7 +1045,7 @@ void SuRun(DWORD ProcessID)
   //RunAs...
   if (g_RunData.bRunAs)
   {
-    if (CreateSafeDesktop(g_RunData.WinSta,GetBlurDesk,GetFadeDesk))
+    if (CreateSafeDesktop(g_RunData.WinSta,g_RunData.Desk,GetBlurDesk,GetFadeDesk))
     {
       if (!RunAsLogon(g_RunData.UserName,g_RunPwd,IDS_ASKRUNAS,BeautifyCmdLine(g_RunData.cmdLine)))
       {
@@ -1062,14 +1063,7 @@ void SuRun(DWORD ProcessID)
     {
       //Create the new desktop
       ResumeClient(RETVAL_OK);
-      HANDLE hTok=0;
-      if (g_RunData.bNoSafeDesk)
-      {
-        OpenProcessToken(GetCurrentProcess(),TOKEN_ALL_ACCESS,&hTok);
-        SetAccessToWinDesk(hTok,g_RunData.WinSta,g_RunData.Desk,true);
-        SetProcWinStaDesk(g_RunData.WinSta,g_RunData.Desk);
-      }
-      if (g_RunData.bNoSafeDesk || CreateSafeDesktop(g_RunData.WinSta,GetBlurDesk,GetFadeDesk))
+      if (CreateSafeDesktop(g_RunData.WinSta,g_RunData.Desk,GetBlurDesk,GetFadeDesk))
       {
         __try
         {
@@ -1088,11 +1082,6 @@ void SuRun(DWORD ProcessID)
 //        DirectStartUserProcess(GetShellProcessId(g_RunData.SessionID),cmd);
       }else
         SafeMsgBox(0,CBigResStr(IDS_NODESK),CResStr(IDS_APPNAME),MB_ICONSTOP|MB_SERVICE_NOTIFICATION);
-      if(g_RunData.bNoSafeDesk)
-      {
-        SetAccessToWinDesk(hTok,g_RunData.WinSta,g_RunData.Desk,false);
-        CloseHandle(hTok);
-      }
       return;
     }
     KillProcess(g_RunData.KillPID);
@@ -1699,9 +1688,16 @@ INT_PTR CALLBACK InstallDlgProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
       case MAKELPARAM(IDIGNORE,BN_CLICKED): //Remove SuRun:
         {
           //Settings
-          g_bKeepRegistry=IsDlgButtonChecked(hwnd,IDC_KEEPREGISTRY)!=0;
-          g_bDelSuRunners=(!g_bKeepRegistry) && IsDlgButtonChecked(hwnd,IDC_DELSURUNNERS)!=0;
-          g_bSR2Admins=g_bDelSuRunners && IsDlgButtonChecked(hwnd,IDC_SR2ADMIN)!=0;
+          g_bKeepRegistry=(IsDlgButtonChecked(hwnd,IDC_KEEPREGISTRY)!=0);
+          if (GetDlgItem(hwnd,IDC_DELSURUNNERS)) //Uninstall:
+          {
+            g_bDelSuRunners=(!g_bKeepRegistry) && (IsDlgButtonChecked(hwnd,IDC_DELSURUNNERS)!=0);
+            g_bSR2Admins=g_bDelSuRunners && (IsDlgButtonChecked(hwnd,IDC_SR2ADMIN)!=0);
+          }else //Update:
+          {
+            g_bDelSuRunners=FALSE;
+            g_bSR2Admins=FALSE;
+          }
           //Hide Checkboxes, show Listbox
           ShowWindow(GetDlgItem(hwnd,IDC_KEEPREGISTRY),SW_HIDE);
           ShowWindow(GetDlgItem(hwnd,IDC_DELSURUNNERS),SW_HIDE);
@@ -1828,7 +1824,11 @@ bool HandleServiceStuff()
     //System Menu Hook: This is AutoRun for every user
     if (_tcsicmp(cmd.argv(1),_T("/SYSMENUHOOK"))==0)
     {
+#ifdef _WIN64
+      CreateMutex(NULL,true,_T("SuRun64_SysMenuHookIsRunning"));
+#else _WIN64
       CreateMutex(NULL,true,_T("SuRun_SysMenuHookIsRunning"));
+#endif _WIN64
       if (GetLastError()==ERROR_ALREADY_EXISTS)
         return ExitProcess(-1),true;
       g_RunData.CliProcessId=GetCurrentProcessId();
@@ -1917,6 +1917,16 @@ bool HandleServiceStuff()
     if (_tcsicmp(cmd.argv(1),_T("/USERINST"))==0)
     {
       UserInstall();
+      ExitProcess(0);
+      return true;
+    }
+  }
+  if (cmd.argc()==4)
+  {
+    //WatchDog
+    if (_tcsicmp(cmd.argv(1),_T("/WATCHDOG"))==0)
+    {
+      DoWatchDog(cmd.argv(2),cmd.argv(3));
       ExitProcess(0);
       return true;
     }

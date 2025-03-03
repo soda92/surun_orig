@@ -1,9 +1,11 @@
-Done:
----------------------
 
-ToDo for next release:
+ToDo
 ---------------------
-* Polish resources
+* Eclipse (JAVA) and SuRuns IAT Hook conflict
+* "*" at the end of a command means "anything from here matches"
+* Switchable Easy/Expert Settings
+* Configurable "Do not display messages" Option
+* "Require user password for SuRun Setings" Option
 
 To be done in future:
 ---------------------
@@ -25,6 +27,27 @@ Deferred Whishlist:
 ------------------------------------------------------------------------------
 SuRun Changes:
 ------------------------------------------------------------------------------
+
+SuRun 1.1.0.6 refresh - 2008-05-26:
+-----------------------------------
+* Win64 "SuRun /SYSMEUHOOK" did not start SuRun32.bin (Mutex)
+* Dutch language resources, thanks to Stephan Paternotte
+
+SuRun 1.1.0.6 - 2008-04-29:
+----------------------------
+* SuRun asks, if a user tries to restart the Windows Shell.
+* Removed "Administrators see SuRuns Setup Dialog on their desktop" feature for
+  two reasons: 
+  1. The Settings dialog for normal users sometimes came up behind the blurred 
+     background window. 
+  2. The settings dialog was not closed when an Administrator did log off.
+* IAT-Hook is again off by default because of incompatibilities with self 
+  checking software. (E.G. Access 2003 and Outlook 2003)
+* Removed Blurred Desktop flicker
+
+SuRun 1.1.0.5 - 2008-04-23:
+----------------------------
+* Administrators see SuRuns Setup Dialog on their desktop
 
 SuRun 1.1.0.4 - 2008-04-11:
 ----------------------------
