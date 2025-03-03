@@ -3,13 +3,12 @@
 // This source code is part of SuRun
 //
 // Some sources in this project evolved from Microsoft sample code, some from 
-// other free sources. The Application icons are from Foood's "iCandy" icon 
-// set (http://www.iconaholic.com). the Shield Icons are taken from Windows XP 
-// Service Pack 2 (xpsp2res.dll) 
+// other free sources. The Shield Icons are taken from Windows XP Service Pack 
+// 2 (xpsp2res.dll) 
 // 
 // Feel free to use the SuRun sources for your liking.
 // 
-//                                   (c) Kay Bruns (http://kay-bruns.de), 2007
+//                                                        (c)2007,08 Kay Bruns
 //////////////////////////////////////////////////////////////////////////////
 
 #pragma once
@@ -25,6 +24,7 @@
 #define DoDBGTrace
 #endif
 
+void TRACExA(LPCSTR s,...);
 void TRACEx(LPCTSTR s,...);
 
 #ifdef DoDBGTrace
@@ -39,6 +39,8 @@ void TRACEx(LPCTSTR s,...);
 #define DBGTrace7(msg,d1,d2,d3,d4,d5,d6,d7)       {TRACEx(_T("%s(%i): ")_T(msg)_T("\n"),_T(__FILE__),__LINE__,d1,d2,d3,d4,d5,d6,d7);}
 #define DBGTrace8(msg,d1,d2,d3,d4,d5,d6,d7,d8)    {TRACEx(_T("%s(%i): ")_T(msg)_T("\n"),_T(__FILE__),__LINE__,d1,d2,d3,d4,d5,d6,d7,d8);}
 #define DBGTrace9(msg,d1,d2,d3,d4,d5,d6,d7,d8,d9) {TRACEx(_T("%s(%i): ")_T(msg)_T("\n"),_T(__FILE__),__LINE__,d1,d2,d3,d4,d5,d6,d7,d8,d9);}
+#define DBGTrace15(msg,d1,d2,d3,d4,d5,d6,d7,d8,d9,d10,d11,d12,d13,d14,d15) \
+  {TRACEx(_T("%s(%i): ")_T(msg)_T("\n"),_T(__FILE__),__LINE__,d1,d2,d3,d4,d5,d6,d7,d8,d9,d10,d11,d12,d13,d14,d15);}
 
 #else DoDBGTrace
 
@@ -52,6 +54,7 @@ void TRACEx(LPCTSTR s,...);
 #define DBGTrace7(msg,d1,d2,d3,d4,d5,d6,d7)       {(void)0;}
 #define DBGTrace8(msg,d1,d2,d3,d4,d5,d6,d7,d8)    {(void)0;}
 #define DBGTrace9(msg,d1,d2,d3,d4,d5,d6,d7,d8,d9) {(void)0;}
+#define DBGTrace15(msg,d1,d2,d3,d4,d5,d6,d7,d8,d9,d10,d11,d12,d13,d14,d15) {(void)0;}
 
 #endif DoDBGTrace 
 

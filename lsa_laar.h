@@ -12,17 +12,18 @@
 //////////////////////////////////////////////////////////////////////////////
 
 #pragma once
-#include <shlobj.h>
 
-#define AppInit32 _T("SOFTWARE\\Wow6432Node\\Microsoft\\Windows NT\\CurrentVersion\\Windows")
-#define AppInit   _T("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Windows")
+typedef enum {
+    DelPrivilege = 0,
+    AddPrivilege,
+    HasPrivilege
+}PrivOp;
 
-extern "C"
-{
-__declspec(dllexport) void RemoveShellExt();
-__declspec(dllexport) void InstallShellExt();
-};
+BOOL AccountPrivilege(LPTSTR Account,LPTSTR Privilege,PrivOp op);
 
-// {2C7B6088-5A77-4d48-BE43-30337DCA9A86}
-DEFINE_GUID(CLSID_ShellExtension,0x2c7b6088,0x5a77,0x4d48,0xbe,0x43,0x30,0x33,0x7d,0xca,0x9a,0x86);
-#define sGUID L"{2C7B6088-5A77-4d48-BE43-30337DCA9A86}"
+#define AddAcctPrivilege(a,p) AccountPrivilege(a,p,AddPrivilege)
+#define DelAcctPrivilege(a,p) AccountPrivilege(a,p,DelPrivilege)
+#define HasAcctPrivilege(a,p) AccountPrivilege(a,p,HasPrivilege)
+
+#define CanSetTime(a)     HasAcctPrivilege(a,SE_SYSTEMTIME_NAME)
+#define AllowSetTime(a,b) AccountPrivilege(a,SE_SYSTEMTIME_NAME,b?AddPrivilege:DelPrivilege)

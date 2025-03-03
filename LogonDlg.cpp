@@ -3,13 +3,12 @@
 // This source code is part of SuRun
 //
 // Some sources in this project evolved from Microsoft sample code, some from 
-// other free sources. The Application icons are from Foood's "iCandy" icon 
-// set (http://www.iconaholic.com). the Shield Icons are taken from Windows XP 
-// Service Pack 2 (xpsp2res.dll) 
+// other free sources. The Shield Icons are taken from Windows XP Service Pack 
+// 2 (xpsp2res.dll) 
 // 
 // Feel free to use the SuRun sources for your liking.
 // 
-//                                   (c) Kay Bruns (http://kay-bruns.de), 2007
+//                                (c) Kay Bruns (http://kay-bruns.de), 2007,08
 //////////////////////////////////////////////////////////////////////////////
 #define _WIN32_WINNT 0x0500
 #define WINVER       0x0500
@@ -25,6 +24,7 @@
 #include "UserGroups.h"
 #include "sspi_auth.h"
 #include "Helpers.h"
+#include "Setup.h"
 #include "Resource.h"
 
 #pragma comment(lib,"shlwapi.lib")
@@ -36,124 +36,6 @@
 //#define _DEBUGLOGON
 #endif _DEBUG
 
-/////////////////////////////////////////////////////////////////////////////
-//
-// LoadUserBitmap
-//
-/////////////////////////////////////////////////////////////////////////////
-
-HBITMAP LoadUserBitmap(LPCTSTR UserName)
-{
-  TCHAR PicDir[MAX_PATH];
-  GetRegStr(HKEY_LOCAL_MACHINE,
-    _T("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Shell Folders"),
-    _T("Common AppData"),PicDir,MAX_PATH);
-  PathUnquoteSpaces(PicDir);
-  PathAppend(PicDir,_T("Microsoft\\User Account Pictures"));
-  TCHAR Pic[UNLEN];
-  _tcscpy(Pic,UserName);
-  PathStripPath(Pic);
-  PathAppend(PicDir,Pic);
-  PathAddExtension(PicDir,_T(".bmp"));
-  //DBGTrace1("LoadUserBitmap: %s",Pic);
-  return (HBITMAP)LoadImage(0,PicDir,IMAGE_BITMAP,0,0,LR_LOADFROMFILE);
-}
-
-/////////////////////////////////////////////////////////////////////////////
-//
-// User list
-//
-/////////////////////////////////////////////////////////////////////////////
-
-typedef struct  
-{
-  WCHAR UserName[UNLEN+DNLEN];
-  HBITMAP UserBitmap;
-}USERDATA;
-
-class USERLIST
-{
-public:
-  int nUsers;
-  USERDATA User[1024];
-  USERLIST(BOOL bAdminsOnly)
-  {
-    nUsers=0;
-    if (bAdminsOnly)
-      AddGroupUsers(DOMAIN_ALIAS_RID_ADMINS);
-    else for (int g=0;g<countof(UserGroups);g++)
-      AddGroupUsers(UserGroups[g]);
-  }
-  ~USERLIST()
-  {
-    for (int i=0;i<nUsers;i++)
-      DeleteObject(User[i].UserBitmap);
-  }
-  void Add(LPWSTR UserName)
-  {
-    if(nUsers>511)
-      return;
-    for(int j=0;j<nUsers;j++)
-    {
-      int cr=_tcsicmp(User[j].UserName,UserName);
-      if (cr==0)
-        return;
-      if (cr>0)
-      {
-        if (j<nUsers)
-          memmove(&User[j+1],&User[j],(nUsers-j)*sizeof(User[0]));
-        break;
-      }
-    }
-    wcscpy(User[j].UserName,UserName);
-    User[j].UserBitmap=LoadUserBitmap(UserName);
-    nUsers++;
-    return;
-  }
-private:
-  void AddGroupUsers(DWORD WellKnownGroup)
-  {
-    DWORD i=0;
-    DWORD GNLen=GNLEN;
-    WCHAR GroupName[GNLEN+1];
-    DWORD res=ERROR_MORE_DATA;
-    if (GetGroupName(WellKnownGroup,GroupName,&GNLen)) for(;res==ERROR_MORE_DATA;)
-    { 
-      LPBYTE pBuff=0;
-      DWORD dwRec=0;
-      DWORD dwTot=0;
-      res = NetLocalGroupGetMembers(NULL,GroupName,2,&pBuff,MAX_PREFERRED_LENGTH,&dwRec,&dwTot,&i);
-      if((res!=ERROR_SUCCESS) && (res!=ERROR_MORE_DATA))
-      {
-        DBGTrace1("NetLocalGroupGetMembers failed: %s",GetErrorNameStatic(res));
-        break;
-      }
-      for(LOCALGROUP_MEMBERS_INFO_2* p=(LOCALGROUP_MEMBERS_INFO_2*)pBuff;dwRec>0;dwRec--,p++)
-      {
-        if (p->lgrmi2_sidusage==SidTypeUser)
-        {
-          TCHAR un[2*UNLEN]={0};
-          TCHAR dn[2*UNLEN]={0};
-          _tcscpy(un,p->lgrmi2_domainandname);
-          PathStripPath(un);
-          _tcscpy(dn,p->lgrmi2_domainandname);
-          PathRemoveFileSpec(dn);
-          USER_INFO_2* b=0;
-          NetUserGetInfo(dn,un,2,(LPBYTE*)&b);
-          if (b)
-          {
-            if ((b->usri2_flags & UF_ACCOUNTDISABLE)==0)
-              Add(p->lgrmi2_domainandname);
-            NetApiBufferFree(b);
-          }else
-            DBGTrace1("NetLocalGroupGetMembers failed: %s",GetErrorNameStatic(res));
-        }
-      }
-      NetApiBufferFree(pBuff);
-    }
-  }
-};
-
 //////////////////////////////////////////////////////////////////////////////
 //
 //  Logon Helper
@@ -162,8 +44,8 @@ private:
 
 HANDLE GetUserToken(LPCTSTR User,LPCTSTR Password)
 {
-  TCHAR un[2*UNLEN]={0};
-  TCHAR dn[2*UNLEN]={0};
+  TCHAR un[2*UNLEN+2]={0};
+  TCHAR dn[2*UNLEN+2]={0};
   _tcscpy(un,User);
   PathStripPath(un);
   _tcscpy(dn,User);
@@ -171,10 +53,28 @@ HANDLE GetUserToken(LPCTSTR User,LPCTSTR Password)
   HANDLE hToken=NULL;
   EnablePrivilege(SE_CHANGE_NOTIFY_NAME);
   EnablePrivilege(SE_TCB_NAME);//Win2k
+  //Enable use of empty passwords for network logon
+  BOOL bEmptyPWAllowed=FALSE;
+  bool bFirstTry=TRUE;
+  if ((Password==NULL) || (*Password==NULL))
+  {
+    bEmptyPWAllowed=EmptyPWAllowed;
+    AllowEmptyPW(TRUE);
+  }
+SecondTry:
   if (!LogonUser(un,dn,Password,LOGON32_LOGON_NETWORK,0,&hToken))
     if (GetLastError()==ERROR_PRIVILEGE_NOT_HELD)
       hToken=SSPLogonUser(dn,un,Password);
-  DBGTrace4("GetUserToken(%s,%s,%s):%s",un,dn,Password,hToken?_T("SUCCEEDED."):_T("FAILED!"));
+  //Windows sometimes reports an error if the user's password is empty, try again:
+  if (bFirstTry && (hToken==NULL)&&((Password==NULL) || (*Password==NULL)))
+  {
+    bFirstTry=FALSE;
+    goto SecondTry;
+  }
+//  DBGTrace4("GetUserToken(%s,%s,%s):%s",un,dn,Password,hToken?_T("SUCCEEDED."):_T("FAILED!"));
+  //Reset status of "use of empty passwords for network logon"
+  if ((Password==NULL) || (*Password==NULL))
+    AllowEmptyPW(bEmptyPWAllowed);
   return hToken;
 }
 
@@ -201,41 +101,34 @@ typedef struct _LOGONDLGPARAMS
   BOOL ForceAdminLogon;
   USERLIST Users;
   int TimeOut;
-  _LOGONDLGPARAMS(LPCTSTR M,LPTSTR Usr,LPTSTR Pwd,BOOL RO,BOOL Adm):Users(Adm)
+  DWORD UsrFlags;
+  _LOGONDLGPARAMS(LPCTSTR M,LPTSTR Usr,LPTSTR Pwd,BOOL RO,BOOL Adm,DWORD UFlags)
   {
     Msg=M;
     User=Usr;
     Password=Pwd;
     UserReadonly=RO;
     ForceAdminLogon=Adm;
+    UsrFlags=UFlags;
     TimeOut=40;//s
   }
 }LOGONDLGPARAMS;
 
 //User Bitmaps:
-void SetUserBitmap(HWND hwnd)
+static void SetUserBitmap(HWND hwnd)
 {
-  LOGONDLGPARAMS* p=(LOGONDLGPARAMS*)GetWindowLong(hwnd,GWL_USERDATA);
+  LOGONDLGPARAMS* p=(LOGONDLGPARAMS*)GetWindowLongPtr(hwnd,GWLP_USERDATA);
   if (p==0)
     return;
   TCHAR User[UNLEN+GNLEN+2]={0};
   GetDlgItemText(hwnd,IDC_USER,User,UNLEN+GNLEN+1);
-  int n=SendDlgItemMessage(hwnd,IDC_USER,CB_GETCURSEL,0,0);
-  if (n!=CB_ERR)
-    SendDlgItemMessage(hwnd,IDC_USER,CB_GETLBTEXT,n,(LPARAM)&User);
-  HBITMAP bm=0;
-  PathStripPath(User);
-  for (int i=0;i<p->Users.nUsers;i++) 
+  if(SendDlgItemMessage(hwnd,IDC_USER,CB_GETCOUNT,0,0))
   {
-    TCHAR un[2*UNLEN]={0};
-    _tcscpy(un,p->Users.User[i].UserName);
-    PathStripPath(un);
-    if (_tcsicmp(un,User)==0)
-    {
-      bm=p->Users.User[i].UserBitmap;
-      break;
-    }
+    int n=(int)SendDlgItemMessage(hwnd,IDC_USER,CB_GETCURSEL,0,0);
+    if (n!=CB_ERR)
+      SendDlgItemMessage(hwnd,IDC_USER,CB_GETLBTEXT,n,(LPARAM)&User);
   }
+  HBITMAP bm=p->Users.GetUserBitmap(User);
   HWND BmpIcon=GetDlgItem(hwnd,IDC_USERBITMAP);
   DWORD dwStyle=GetWindowLong(BmpIcon,GWL_STYLE)&(~SS_TYPEMASK);
   if(bm)
@@ -268,7 +161,7 @@ SIZE CliSize(HWND w)
 int NX_Ctrls[]={IDC_SECICON,IDC_SECICON1,IDC_USERBITMAP,IDC_USRST,IDC_PWDST};
 //These controls are stretched on X-Resize
 int SX_Ctrls[]={IDC_WHTBK,IDC_HINTBK,IDC_FRAME1,IDC_FRAME2,IDC_DLGQUESTION,
-                IDC_USER,IDC_PASSWORD,IDC_HINT,IDC_HINT2,IDC_ALWAYSOK};
+                IDC_USER,IDC_PASSWORD,IDC_HINT,IDC_HINT2,IDC_ALWAYSOK,IDC_SHELLEXECOK};
 //These controls are moved on X-Resize
 int MX_Ctrls[]={IDCANCEL,IDOK};
 //These controls are not changed on Y-Resize
@@ -278,7 +171,7 @@ int SY_Ctrls[]={IDC_WHTBK,IDC_DLGQUESTION};
 //These controls are moved on Y-Resize
 int MY_Ctrls[]={IDC_SECICON1,IDC_USERBITMAP,IDC_HINTBK,IDC_FRAME1,IDC_FRAME2,
                 IDC_USER,IDC_PASSWORD,IDC_HINT,IDC_HINT2,IDCANCEL,IDOK,
-                IDC_USRST,IDC_PWDST,IDC_ALWAYSOK};
+                IDC_USRST,IDC_PWDST,IDC_ALWAYSOK,IDC_SHELLEXECOK};
 
 void MoveDlgCtrl(HWND hDlg,int nId,int x,int y,int dx,int dy)
 {
@@ -372,14 +265,14 @@ INT_PTR CALLBACK DialogProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
   case WM_INITDIALOG:
     {
       LOGONDLGPARAMS* p=(LOGONDLGPARAMS*)lParam;
-      SetWindowLong(hwnd,GWL_USERDATA,lParam);
+      SetWindowLongPtr(hwnd,GWLP_USERDATA,lParam);
       if (IsWindowEnabled(GetDlgItem(hwnd,IDC_PASSWORD)))
         g_HintBrush=CreateSolidBrush(RGB(192,128,0));
       else
         g_HintBrush=CreateSolidBrush(RGB(128,192,0));
       SendMessage(hwnd,WM_SETICON,ICON_BIG,
         (LPARAM)LoadImage(GetModuleHandle(0),MAKEINTRESOURCE(IDI_MAINICON),
-        IMAGE_ICON,0,0,0));
+        IMAGE_ICON,32,32,0));
       SendMessage(hwnd,WM_SETICON,ICON_SMALL,
         (LPARAM)LoadImage(GetModuleHandle(0),MAKEINTRESOURCE(IDI_MAINICON),
         IMAGE_ICON,16,16,0));
@@ -392,18 +285,25 @@ INT_PTR CALLBACK DialogProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
       SetDlgItemText(hwnd,IDC_PASSWORD,p->Password);
       SendDlgItemMessage(hwnd,IDC_PASSWORD,EM_SETPASSWORDCHAR,'*',0);
       BOOL bFoundUser=FALSE;
-      for (int i=0;i<p->Users.nUsers;i++)
+      for (int i=0;i<p->Users.GetCount();i++)
       {
         SendDlgItemMessage(hwnd,IDC_USER,CB_INSERTSTRING,i,
-          (LPARAM)&p->Users.User[i].UserName);
-        if (_tcsicmp(p->Users.User[i].UserName,p->User)==0)
+          (LPARAM)p->Users.GetUserName(i));
+        if (_tcsicmp(p->Users.GetUserName(i),p->User)==0)
         {
           SendDlgItemMessage(hwnd,IDC_USER,CB_SETCURSEL,i,0);
           bFoundUser=TRUE;
         }
       }
       if (p->UserReadonly)
+      {
         EnableWindow(GetDlgItem(hwnd,IDC_USER),false);
+        if (GetNoRunSetup(p->User))
+        {
+          EnableWindow(GetDlgItem(hwnd,IDC_SHELLEXECOK),false);
+          EnableWindow(GetDlgItem(hwnd,IDC_ALWAYSOK),false);
+        }
+      }
       if (IsWindowEnabled(GetDlgItem(hwnd,IDC_USER)))
         SetFocus(GetDlgItem(hwnd,IDC_USER));
       else if (IsWindowEnabled(GetDlgItem(hwnd,IDC_PASSWORD)))
@@ -415,7 +315,12 @@ INT_PTR CALLBACK DialogProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
       if ((!p->ForceAdminLogon)|| bFoundUser)
         SetDlgItemText(hwnd,IDC_USER,p->User);
       else
-        SetDlgItemText(hwnd,IDC_USER,p->Users.User[0].UserName);
+      {
+        SetDlgItemText(hwnd,IDC_USER,p->Users.GetUserName(0));
+        SendDlgItemMessage(hwnd,IDC_USER,CB_SETCURSEL,0,0);
+      }
+      CheckDlgButton(hwnd,IDC_SHELLEXECOK,(p->UsrFlags&FLAG_SHELLEXEC)?1:0);
+      CheckDlgButton(hwnd,IDC_ALWAYSOK,(p->UsrFlags&(FLAG_DONTASK|FLAG_AUTOCANCEL))?1:0);
       SetUserBitmap(hwnd);
       SetWindowSizes(hwnd);
       SetTimer(hwnd,2,1000,0);
@@ -426,18 +331,21 @@ INT_PTR CALLBACK DialogProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
       HGDIOBJ fs=GetStockObject(DEFAULT_GUI_FONT);
       HGDIOBJ f=(HGDIOBJ)SendDlgItemMessage(hwnd,IDC_DLGQUESTION,WM_GETFONT,0,0);
       SendDlgItemMessage(hwnd,IDC_DLGQUESTION,WM_SETFONT,(WPARAM)fs,0);
-      DeleteObject(f);
+      if(f)
+        DeleteObject(f);
       if (GetDlgItem(hwnd,IDC_HINT))
       {
         f=(HGDIOBJ)SendDlgItemMessage(hwnd,IDC_HINT,WM_GETFONT,0,0);
         SendDlgItemMessage(hwnd,IDC_HINT,WM_SETFONT,(WPARAM)fs,0);
-        DeleteObject(f);
+        if(f)
+          DeleteObject(f);
       }
       return TRUE;
     }
   case WM_NCDESTROY:
     {
-      DeleteObject(g_HintBrush);
+      if(g_HintBrush)
+        DeleteObject(g_HintBrush);
       g_HintBrush=0;
       DestroyIcon((HICON)SendMessage(hwnd,WM_GETICON,ICON_BIG,0));
       DestroyIcon((HICON)SendMessage(hwnd,WM_GETICON,ICON_SMALL,0));
@@ -449,15 +357,15 @@ INT_PTR CALLBACK DialogProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
       if ((CtlId==IDC_DLGQUESTION)||(CtlId==IDC_SECICON))
       {
         SetBkMode((HDC)wParam,TRANSPARENT);
-        return (BOOL)GetStockObject(WHITE_BRUSH);
+        return (BOOL)PtrToUlong(GetStockObject(WHITE_BRUSH));
       }
       if ((CtlId==IDC_HINT)||(CtlId==IDC_SECICON1))
       {
         SetBkMode((HDC)wParam,TRANSPARENT);
-        return (BOOL)g_HintBrush;
+        return (BOOL)PtrToUlong(g_HintBrush);
       }
       if (CtlId==IDC_HINTBK)
-        return (BOOL)g_HintBrush;
+        return (BOOL)PtrToUlong(g_HintBrush);
       break;
     }
   case WM_TIMER:
@@ -466,7 +374,7 @@ INT_PTR CALLBACK DialogProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
         SetUserBitmap(hwnd);
       if (wParam==2)
       {
-        LOGONDLGPARAMS* p=(LOGONDLGPARAMS*)GetWindowLong(hwnd,GWL_USERDATA);
+        LOGONDLGPARAMS* p=(LOGONDLGPARAMS*)GetWindowLongPtr(hwnd,GWLP_USERDATA);
         p->TimeOut--;
         if (p->TimeOut<0)
           EndDialog(hwnd,0);
@@ -490,13 +398,19 @@ INT_PTR CALLBACK DialogProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
         SetUserBitmap(hwnd);
         return TRUE;
       case MAKEWPARAM(IDCANCEL,BN_CLICKED):
-        EndDialog(hwnd,0);
+        {
+          INT_PTR ExitCode=(IsDlgButtonChecked(hwnd,IDC_ALWAYSOK)<<1)
+            +(IsDlgButtonChecked(hwnd,IDC_SHELLEXECOK)<<2);
+          EndDialog(hwnd,ExitCode);
+        }
         return TRUE;
       case MAKEWPARAM(IDOK,BN_CLICKED):
         {
+          INT_PTR ExitCode=1+(IsDlgButtonChecked(hwnd,IDC_ALWAYSOK)<<1)
+                            +(IsDlgButtonChecked(hwnd,IDC_SHELLEXECOK)<<2);
           if (IsWindowEnabled(GetDlgItem(hwnd,IDC_PASSWORD)))
           {
-            LOGONDLGPARAMS* p=(LOGONDLGPARAMS*)GetWindowLong(hwnd,GWL_USERDATA);
+            LOGONDLGPARAMS* p=(LOGONDLGPARAMS*)GetWindowLongPtr(hwnd,GWLP_USERDATA);
             GetDlgItemText(hwnd,IDC_USER,p->User,UNLEN+GNLEN+1);
             GetWindowText((HWND)GetDlgItem(hwnd,IDC_PASSWORD),p->Password,PWLEN);
             HANDLE hUser=GetUserToken(p->User,p->Password);
@@ -505,20 +419,20 @@ INT_PTR CALLBACK DialogProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
               if ((p->ForceAdminLogon)&&(!IsAdmin(hUser)))
               {
                 CloseHandle(hUser);
-                MessageBox(hwnd,CResStr(IDS_NOADMIN,p->User),CResStr(IDS_APPNAME),MB_ICONINFORMATION);
+                SafeMsgBox(hwnd,CResStr(IDS_NOADMIN,p->User),CResStr(IDS_APPNAME),MB_ICONINFORMATION);
               }else
               {
                 CloseHandle(hUser);
-                EndDialog(hwnd,1+IsDlgButtonChecked(hwnd,IDC_ALWAYSOK));
+                EndDialog(hwnd,ExitCode);
               }
             }else
             {
-              MessageBox(hwnd,CResStr(IDS_LOGONFAILED),CResStr(IDS_APPNAME),MB_ICONINFORMATION);
+              SafeMsgBox(hwnd,CBigResStr(IDS_LOGONFAILED),CResStr(IDS_APPNAME),MB_ICONINFORMATION);
               SendDlgItemMessage(hwnd,IDC_PASSWORD,EM_SETSEL,0,-1);
               SetFocus(GetDlgItem(hwnd,IDC_PASSWORD));
             }
           }else
-            EndDialog(hwnd,1+IsDlgButtonChecked(hwnd,IDC_ALWAYSOK));
+            EndDialog(hwnd,ExitCode);
           return TRUE;
         }//MAKELPARAM(IDOK,BN_CLICKED)
       }//switch (wParam)
@@ -539,9 +453,10 @@ BOOL Logon(LPTSTR User,LPTSTR Password,int IDmsg,...)
   va_list va;
   va_start(va,IDmsg);
   CBigResStr S(IDmsg,va);
-  LOGONDLGPARAMS p(S,User,Password,false,false);
-  return DialogBoxParam(GetModuleHandle(0),MAKEINTRESOURCE(IDD_LOGONDLG),0,
-    DialogProc,(LPARAM)&p);
+  LOGONDLGPARAMS p(S,User,Password,false,false,false);
+  p.Users.SetUsualUsers(FALSE);
+  return (BOOL)DialogBoxParam(GetModuleHandle(0),MAKEINTRESOURCE(IDD_LOGONDLG),
+                  0,DialogProc,(LPARAM)&p);
 }
 
 BOOL LogonAdmin(LPTSTR User,LPTSTR Password,int IDmsg,...)
@@ -549,29 +464,48 @@ BOOL LogonAdmin(LPTSTR User,LPTSTR Password,int IDmsg,...)
   va_list va;
   va_start(va,IDmsg);
   CBigResStr S(IDmsg,va);
-  LOGONDLGPARAMS p(S,User,Password,false,true);
-  return DialogBoxParam(GetModuleHandle(0),MAKEINTRESOURCE(IDD_LOGONDLG),0,
-    DialogProc,(LPARAM)&p);
+  LOGONDLGPARAMS p(S,User,Password,false,true,false);
+  p.Users.SetGroupUsers(DOMAIN_ALIAS_RID_ADMINS,TRUE);
+  return (BOOL)DialogBoxParam(GetModuleHandle(0),MAKEINTRESOURCE(IDD_LOGONDLG),
+                  0,DialogProc,(LPARAM)&p);
 }
 
-BOOL LogonCurrentUser(LPTSTR User,LPTSTR Password,int IDmsg,...)
+BOOL LogonAdmin(int IDmsg,...)
 {
   va_list va;
   va_start(va,IDmsg);
   CBigResStr S(IDmsg,va);
-  LOGONDLGPARAMS p(S,User,Password,true,false);
-  return DialogBoxParam(GetModuleHandle(0),MAKEINTRESOURCE(IDD_CURUSRLOGON),0,
-    DialogProc,(LPARAM)&p);
+  TCHAR U[UNLEN+GNLEN+2]={0};
+  TCHAR P[PWLEN]={0};
+  LOGONDLGPARAMS p(S,U,P,false,true,false);
+  p.Users.SetGroupUsers(DOMAIN_ALIAS_RID_ADMINS,TRUE);
+  BOOL bRet=(BOOL)DialogBoxParam(GetModuleHandle(0),
+                    MAKEINTRESOURCE(IDD_LOGONDLG),0,DialogProc,(LPARAM)&p);
+  zero(U);
+  zero(P);
+  return bRet;
 }
 
-BOOL AskCurrentUserOk(LPTSTR User,int IDmsg,...)
+DWORD LogonCurrentUser(LPTSTR User,LPTSTR Password,DWORD UsrFlags,int IDmsg,...)
 {
   va_list va;
   va_start(va,IDmsg);
   CBigResStr S(IDmsg,va);
-  LOGONDLGPARAMS p(S,User,_T("******"),true,false);
-  return DialogBoxParam(GetModuleHandle(0),MAKEINTRESOURCE(IDD_CURUSRACK),0,
-    DialogProc,(LPARAM)&p);
+  LOGONDLGPARAMS p(S,User,Password,true,false,UsrFlags);
+  p.Users.Add(User);
+  return (DWORD )DialogBoxParam(GetModuleHandle(0),MAKEINTRESOURCE(IDD_CURUSRLOGON),
+                  0,DialogProc,(LPARAM)&p);
+}
+
+DWORD AskCurrentUserOk(LPTSTR User,DWORD UsrFlags,int IDmsg,...)
+{
+  va_list va;
+  va_start(va,IDmsg);
+  CBigResStr S(IDmsg,va);
+  LOGONDLGPARAMS p(S,User,_T("******"),true,false,UsrFlags);
+  p.Users.Add(User);
+  return (DWORD)DialogBoxParam(GetModuleHandle(0),MAKEINTRESOURCE(IDD_CURUSRACK),
+                  0,DialogProc,(LPARAM)&p);
 }
 
 #ifdef _DEBUGLOGON
@@ -579,33 +513,60 @@ BOOL TestLogonDlg()
 {
   INITCOMMONCONTROLSEX icce={sizeof(icce),ICC_USEREX_CLASSES|ICC_WIN95_CLASSES};
   InitCommonControlsEx(&icce);
-  TCHAR User[MAX_PATH]=L"Bruns\\KAY";
-  TCHAR Password[MAX_PATH]={0};
-  BOOL l=Logon(User,Password,IDS_ASKINSTALL);
+  TCHAR User[4096]=L"Bruns\\KAY";
+  TCHAR Password[4096]={0};
+
+  SetThreadLocale(MAKELCID(MAKELANGID(LANG_GERMAN,SUBLANG_GERMAN),SORT_DEFAULT));
+
+  BOOL l=Logon(User,Password,IDS_ASKAUTO);
+  if (l==-1)
+    DBGTrace2("DialogBoxParam returned %d: %s",l,GetLastErrorNameStatic());
+  l=LogonAdmin(IDS_NOADMIN2,L"BRUNS\\NixDu");
   if (l==-1)
     DBGTrace2("DialogBoxParam returned %d: %s",l,GetLastErrorNameStatic());
   l=LogonAdmin(User,Password,IDS_NOSURUNNER);
   if (l==-1)
     DBGTrace2("DialogBoxParam returned %d: %s",l,GetLastErrorNameStatic());
-  l=LogonCurrentUser(User,Password,IDS_ASKOK,L"cmd");
+  l=LogonCurrentUser(User,Password,0,IDS_ASKOK,L"cmd");
   if (l==-1)
     DBGTrace2("DialogBoxParam returned %d: %s",l,GetLastErrorNameStatic());
-  l=AskCurrentUserOk(User,IDS_ASKOK,L"cmd");
+  l=AskCurrentUserOk(User,0,IDS_ASKOK,L"cmd");
   if (l==-1)
     DBGTrace2("DialogBoxParam returned %d: %s",l,GetLastErrorNameStatic());
 
   SetThreadLocale(MAKELCID(MAKELANGID(LANG_ENGLISH,SUBLANG_ENGLISH_US),SORT_DEFAULT));
 
-  l=Logon(User,Password,IDS_ASKINSTALL);
+  l=Logon(User,Password,IDS_ASKAUTO);
+  if (l==-1)
+    DBGTrace2("DialogBoxParam returned %d: %s",l,GetLastErrorNameStatic());
+  l=LogonAdmin(IDS_NOADMIN2,L"BRUNS\\NixDu");
   if (l==-1)
     DBGTrace2("DialogBoxParam returned %d: %s",l,GetLastErrorNameStatic());
   l=LogonAdmin(User,Password,IDS_NOSURUNNER);
   if (l==-1)
     DBGTrace2("DialogBoxParam returned %d: %s",l,GetLastErrorNameStatic());
-  l=LogonCurrentUser(User,Password,IDS_ASKOK,L"cmd");
+  l=LogonCurrentUser(User,Password,0,IDS_ASKOK,L"cmd");
   if (l==-1)
     DBGTrace2("DialogBoxParam returned %d: %s",l,GetLastErrorNameStatic());
-  l=AskCurrentUserOk(User,IDS_ASKOK,L"cmd");
+  l=AskCurrentUserOk(User,0,IDS_ASKOK,L"cmd");
+  if (l==-1)
+    DBGTrace2("DialogBoxParam returned %d: %s",l,GetLastErrorNameStatic());
+
+  SetThreadLocale(MAKELCID(MAKELANGID(LANG_POLISH,0),SORT_DEFAULT));
+  
+  l=Logon(User,Password,IDS_ASKAUTO);
+  if (l==-1)
+    DBGTrace2("DialogBoxParam returned %d: %s",l,GetLastErrorNameStatic());
+  l=LogonAdmin(IDS_NOADMIN2,L"BRUNS\\NixDu");
+  if (l==-1)
+    DBGTrace2("DialogBoxParam returned %d: %s",l,GetLastErrorNameStatic());
+  l=LogonAdmin(User,Password,IDS_NOSURUNNER);
+  if (l==-1)
+    DBGTrace2("DialogBoxParam returned %d: %s",l,GetLastErrorNameStatic());
+  l=LogonCurrentUser(User,Password,0,IDS_ASKOK,L"cmd");
+  if (l==-1)
+    DBGTrace2("DialogBoxParam returned %d: %s",l,GetLastErrorNameStatic());
+  l=AskCurrentUserOk(User,0,IDS_ASKOK,L"cmd");
   if (l==-1)
     DBGTrace2("DialogBoxParam returned %d: %s",l,GetLastErrorNameStatic());
 

@@ -3,13 +3,12 @@
 // This source code is part of SuRun
 //
 // Some sources in this project evolved from Microsoft sample code, some from 
-// other free sources. The Application icons are from Foood's "iCandy" icon 
-// set (http://www.iconaholic.com). the Shield Icons are taken from Windows XP 
-// Service Pack 2 (xpsp2res.dll) 
+// other free sources. The Shield Icons are taken from Windows XP Service Pack 
+// 2 (xpsp2res.dll) 
 // 
 // Feel free to use the SuRun sources for your liking.
 // 
-//                                   (c) Kay Bruns (http://kay-bruns.de), 2007
+//                                (c) Kay Bruns (http://kay-bruns.de), 2007,08
 //////////////////////////////////////////////////////////////////////////////
 #define _WIN32_WINNT 0x0500
 #define WINVER       0x0500
@@ -196,10 +195,10 @@ BOOL RunAs(LPCWSTR lpCmdLine,LPCWSTR szUser,LPCWSTR szPassword)
   PROCESS_INFORMATION pi = {0};
   STARTUPINFOW si = {0};
   si.cb = sizeof(STARTUPINFO);
-  WCHAR CurDir[MAX_PATH];
-  GetCurrentDirectoryW(MAX_PATH,CurDir);
-  TCHAR un[2*UNLEN]={0};
-  TCHAR dn[2*UNLEN]={0};
+  WCHAR CurDir[4096];
+  GetCurrentDirectoryW(4096,CurDir);
+  TCHAR un[2*UNLEN+2]={0};
+  TCHAR dn[2*UNLEN+2]={0};
   _tcscpy(un,szUser);
   PathStripPath(un);
   _tcscpy(dn,szUser);
@@ -251,6 +250,9 @@ BOOL RunAsAdmin(LPCTSTR cmdline,int IDmsg)
   TCHAR User[UNLEN+GNLEN+2]={0};
   TCHAR Password[PWLEN+1]={0};
   GetProcessUserName(GetCurrentProcessId(),User);
-  return LogonAdmin(User,Password,IDmsg) 
-      && RunAs(cmdline,User,Password);
+  BOOL bRet=LogonAdmin(User,Password,IDmsg) 
+    && RunAs(cmdline,User,Password);
+  zero(User);      //Clean sensitive Data
+  zero(Password);  //Clean sensitive Data
+  return bRet;
 }

@@ -1,4 +1,4 @@
-LIBRARY     SuRunExt
+LIBRARY     SuRunExt32
 
 SECTIONS
      .SHDATA   READ WRITE SHARED 
@@ -6,4 +6,3 @@ SECTIONS
 EXPORTS
    DllCanUnloadNow   PRIVATE
    DllGetClassObject PRIVATE
-   CPlApplet         PRIVATE

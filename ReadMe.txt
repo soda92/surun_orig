@@ -1,39 +1,78 @@
 ==============================================================================
 SuRun...  Super User Run
-                                                        by Kay Bruns (c) 2007
+                                                      by Kay Bruns (c) 2007,08
 ==============================================================================
 
 ------------------------------------------------------------------------------
 SuRun?
 ------------------------------------------------------------------------------
 
-SuRun eases working with Windows 2000 or Windows XP with limited user rights.
+SuRun eases using Windows 2000 or Windows XP with limited user rights.
+SuRun usually runs on Windows Vista too if you disable User Account Control.
+
+With SuRun you can start applications with elevated rights without needing
+administrator credentials.
 
 The idea is simple and was taken from SuDown (http://SuDown.sourceforge.net).
-The user usually works with the pc as standard user. 
+The user usually works with the pc as standard user with limited rights. 
 If a program needs administrative rights, the user starts "SuRun <app>". 
 SuRun then asks the user in a secure desktop if <app> should really be 
 run with administrative rights. If the user acknowledges, SuRun will start 
 <app> AS THE CURRENT USER but WITH ADMINISTRATIVE RIGHTS.
-SuRun uses the trick from SuDown: 
+
+SuRun uses the same trick as SuDown: 
  * Put the user in the local Administrators user group
  * Start <app>
  * Remove the user from the local Administrators user group
 
-SuRun also installs a hook that appends "Run as admin..." and "Restart as 
-admin..." to the system menu of every application that does not run as 
-administrator. That makes it possible to accomplish tasks that you otherwise 
-could not, e.g. setting the Windows clock by double clicking it in the task 
-bar notification area would normally display a "Access denied" Message and 
-exit. With SuRun you are able to click "Restart as admin..." and to set the 
-clock.
+To use SuRun a user must be member of the local user group "SuRunners".
+If the user is no member of "SuRunners" and tries to use SuRun, (s)he will be 
+asked to join "SuRunners". The user must either be an administrator or enter 
+administrator credentials to join the SuRunners group.
+(SuRun does not store any administrative credentials!)
+
+Members of "SuRunners" can be restricted so that they must not change SuRuns 
+settings and to be able to only start predefined applications with elevated 
+rights. So parents can allow their children to play games that require 
+administrative rights without loosing control of the system. Also employees 
+can be allowed to run several applications with elevated rights without being 
+able to change the system.
+
+SuRun installs a hook that appends "Run as admin..." and "Restart as admin..." 
+to the system menu of every application that does not run as administrator. 
+That enables doing things that you otherwise could not do, e.g. setting the 
+Windows clock by double clicking it in the task bar notification area would 
+normally display a "Access denied" Message and exit. With SuRun you are able 
+to right click the Caption, choose "Restart as admin..." and to finally set 
+the clock.
 
 SuRun integrates with the windows shell and adds "Start as admin..." to the 
-Shell context menu of bat, cmd, cpl, exe, lnk and msi files.
+Shell context menu of bat, cmd, cpl, exe, lnk, msi, msc and reg files. It also 
+adds "'SuRun cmd' here" and "'SuRun Explorer' here" to the context menu of 
+folders and "Control panel as administrator" to the Desktop context menu.
+
+SuRun tries to intercept the start of applications. If an application requires 
+administrative rights it it will be started so. 
+SuRun presumes that an application requires administrative rights when:
+-it is in the Users List of applications to run with elevated rights
+-it has the extension msi or msc
+-it has the extension exe, cmd, lnk, com, pif or bat and the file name 
+ contains install, setup or update
+-it has a Vista RT_MANIFEST resource containing <*trustInfo>->
+ <*security>-><*requestedPrivileges>-><*requestedExecutionLevel 
+ level="requireAdministrator">
+-a file <appname>.manifest in the same folder as the application contains
+ <*trustInfo>-><*security>-><*requestedPrivileges>-><*requestedExecutionLevel 
+ level="requireAdministrator">
+
+SuRun can be configured with "SuRun Settings" in the control panel.
 
 ------------------------------------------------------------------------------
 Why not use the built in "Run As..." Windows command?
 ------------------------------------------------------------------------------
+
+*RunAs can (without any administrative rights) be abused by keyloggers and 
+ Import Address Table Hookers to get the credentials of an Administrator.
 
 *Windows loads the registry and environment for the user that you run as.
  If a software is about to be installed, the installation program will see
@@ -43,9 +82,6 @@ Why not use the built in "Run As..." Windows command?
 
  SuRun uses the current user account, so all registry entries and file system 
  paths are the same as the user would expect.
-
-*Windows asks for the user name and password directly on the users desktop
- Any spy (or even the friendly Autohotkey) could get an administrator password.
 
 ------------------------------------------------------------------------------
 Why not use SuDown?
@@ -78,8 +114,215 @@ Why use SuRun?
  increase the chance that the system could be infected by malware.
 
 ------------------------------------------------------------------------------
+How to build the sources?
+------------------------------------------------------------------------------
+
+To compile SuRun you probably need Visual C++ 6.0 and Microsoft's Platform SDK.
+
+* To build the 32Bit version of SuRun you can use the last official Platform 
+  SDK for VC6, version 02/2003.
+  Use SuRun.dsw to build "Win32 Unicode Release". 
+  SuRun.exe and SuRunExt.dll will be compiled to the directory ReleaseU.
+
+* Compiling the 64 Bit version is a bit more tricky.
+  In Win64, Windows has two subsystems in parallel, Win64 and Win32. To get the 
+  System Menu hook for 32Bit and 64Bit Applications, you must install one Hook 
+  for each subsystem. So SuRun64 consists of four files. "SuRun.exe", the Win64
+  executable; "SuRunExt.dll" for the Win64 Hooks; "SuRun32.bin", the 32Bit
+  executable and "SuRunExt32.dll" for the 32Bit system menu hook.
+  -First you need to install Microsoft's Platform SDK 04/2005 ("Windows Server 
+   2003 SP1")
+  -Then "Open Build Environment Window"->"Windows XP 64-bit Build Environment"
+   ->"Set Windows XP x64 Build Environment (Retail)"
+  -In the command prompt type "MSDEV.EXE /useenv"
+  I use the following batch file for that:
+    --------------------------------------------------------------------------
+    set VC6Dir=E:\VStudio
+    Set MSSDK=E:\MSTOOLS
+    call %VC6Dir%\VC98\Bin\VCVARS32.BAT
+    call %MSSDK%\SetEnv.Cmd /X64
+    start %VC6Dir%\Common\MSDev98\Bin\MSDEV.EXE /useenv
+    --------------------------------------------------------------------------
+  In MSDEV with the AMD64 build environment compile the "Win32 x64 Unicode 
+  Release" to get SuRun.exe and SuRunExt.dll.
+  Then start MSDEV just as usual with the 32Bit build environment and make 
+  "Win32 SuRun32 Unicode Release" to get SuRun32.bin and SuRunExt32.dll.
+
+* After compiling "SuRun - Win32 Unicode Release", "SuRun - Win32 SuRun32 
+  Unicode Release" and "SuRun - Win32 x64 Unicode Release" you can compile
+  "InstallSuRun - Win32 Release" to build the Install container.
+  (You'll need UPX 3.02 or newer in the %path%)
+
+------------------------------------------------------------------------------
 Changes:
 ------------------------------------------------------------------------------
+
+SuRun 1.1.0.2 - 2008-03-19:
+----------------------------
+* In a domain SuRun could not be used without being logged in to the domain. 
+
+SuRun 1.1.0.1 - 2008-03-11:
+----------------------------
+* The IShellExecuteHook did not work properly because SuRun did not initialize 
+  to zero the static variables it uses.
+
+SuRun 1.1.0.0 - 2008-03-10: (changes to SuRun 1.0.2.9)
+----------------------------
+* SuRuns start menu entries were removed. 'SuRun Settings' and 'Uninstall 
+  SuRun' can be done from the control panel.
+* SuRun Installation can be done from "InstallSuRun.exe". InstallSuRun contains
+  both, the 32Bit and 64Bit version and automatically installs the correct 
+  version for your OS.
+  Installation/Update is Dialog based with options:
+    * "Do not change SuRuns file associations" on Update
+    * Run Setup after Install on first Install
+    * Show "Set 'Administrators' instead of 'Object creator' as default owner 
+      for objects created by administrators." when this was not set before.
+  Uninstallation is Dialog based with options
+    * Keep all SuRun Settings
+    * Delete "SuRunners"
+    * Make SuRunners Admins
+* SuRun runs in a domain. It enumerates domain accounts for administrative 
+  authorization and uses the local group "SuRunners" for local authorization.
+* SuRun can be restricted on a per User basis:
+  - Users can be denied to use "SuRun setup".
+  - Users can be restricted to specific applications that are allowed to run 
+    with elevated rights
+  This enables to use SuRun in Parent/Children scenarios or in Companies where 
+  real Administrators want to work with lowered rights.
+* SuRun can intercept the execution of processes by hooking the Import Address 
+  Table of Modules (experimental) and by implementing the IShellExecuteHook
+  Interface (recommended).
+  Each SuRunner can specify a list of programs that will automagically started
+  with elevated rights.
+  Additionally SuRun parses processes for Vista Manifests and file names.
+  -All files with extension msi and msc and all files with extension exe, cmd, 
+   lnk, com, pif, bat and a file name that contains install, setup or update 
+   are suspected that they must be run with elevated rights.
+  -All files with a Vista RT_MANIFEST resource containing <*trustInfo>->
+   <*security>-><*requestedPrivileges>-><*requestedExecutionLevel 
+   level="requireAdministrator"> are suspected that they must be run with 
+   elevated rights.
+  The SuRunner can specify to start a program from the List with elevated 
+  rights without being asked. If that happens, SuRun can show a Message window 
+  on screen that a program was launched with elevated rights.
+* FIX: SuRun could be hooked by IAT-Hookers. CreateProcessWithLogonW could 
+  be intercepted by an IAT-Hooker and the Credentials could be used to run an 
+  administrative process. Now a clean SuRun is started by the Service with 
+  "AppInit_Dlls" disabled to do a clean CreateProcessWithLogonW.
+* When User is in SuRunners and Explorer runs as Admin, SuRun urges the user 
+  to logoff before SuRun can be used.
+* Choosing "Don't ask this question again for this program" and pressing 
+  cancel causes SuRun to auto-cancel all future requests to run this program
+  with elevated rights.
+* Non 'SuRunners' will not see any of SuRuns Execution Hooks, System menu 
+  ((Re)Start as Administrator) or shell context menu (Control panel/cmd/
+  Explorer as Administrator) entries.
+* New self made Control Panel Icon
+* SuRun tries to locate the Application to be started. So "surun cmd" will
+  make ask SuRun whether "C:\Windows\System32\cmd.exe" is allowed to run.
+* SuRuns Shell integration can be customized.
+* SuRun waits for max 3 minutes after the Windows start for the Service.
+* New command line Option: /QUIET
+* New Commands. If the User right-clicks on a folder background, two new Items,
+  "'SuRun cmd' here" and "'SuRun Explorer' here" are shown.
+* Added Context menu for Folders in Explorer (cmd/Explorer <here> as admin)
+* "SuRun *.reg" now starts "%Windir%\Regedit.exe *.reg" as Admin
+* Added "Start as Admin" for *.reg files
+* SuRun is now hidden from the frequently used program list of the Start menu
+
+SuRun 1.0.3.0 - 2008-02-15: BackPort Release
+---------------------------
+Because of the vulnerability I ported some features of the current Beta back 
+to the release version.
+* FIX: SuRun could be hooked by IAT-Hookers. CreateProcessWithLogonW could 
+  be intercepted by an IAT-Hooker and the Credentials could be used to run an 
+  administrative process. Now a clean SuRun is started by the Service with 
+  "AppInit_Dlls" disabled to do a clean CreateProcessWithLogonW.
+* SuRun is now hidden from the frequently used program list of the Start menu
+* SuRun tries to locate the Application to be started. So "surun cmd" will
+  make ask SuRun whether "C:\Windows\System32\cmd.exe" is allowed to run.
+* "SuRun *.reg" now starts "%Windir%\Regedit.exe *.reg" as Admin
+* Added "Start as Admin" for *.reg files
+* Fixed "SuRun %SystemRoot%\System32\control.exe" and
+  "SuRun %SystemRoot%\System32\ncpa.cpl"
+* fixed command line processing for "SuRun *.msi"
+
+SuRun 1.0.2.9 - 2007-11-17:
+---------------------------
+* SuRun now sets an ExitCode
+* FIX: In Windows XP a domain name can have more than DNLEN(=15) characters.
+    This caused GetProcessUsername() to fail and NetLocalGroupAddMembers() 
+    to return "1: Invalid Function".
+* Fixed a Bug in the LogonDialog that could cause an exception.
+
+SuRun 1.0.2.8 - 2007-10-11:
+---------------------------
+* Added code to avoid Deadlock with AntiVir's RootKit detector "avipbb.sys" 
+  that breaks OpenProcess()
+* Added code to recover SuRuns Desktop when user processes call SwitchDesktop()
+  "shedhlp.exe", part of Acronis True Image Home 11 calls SwitchDesktop() 
+  periodically and so switches from SuRuns Desktop back to the users Desktop.
+
+SuRun 1.0.2.7 - 2007-09-21:
+---------------------------
+* Fixed a Bug in the Sysmenuhook that caused "start as administrator" to
+  fire multiple times.
+
+SuRun 1.0.2.6 - 2007-09-20:
+---------------------------
+* SuRun - x64 Version added, the version number is the same because SuRun 
+  has no new functions or bugfixes
+
+SuRun 1.0.2.6 - 2007-09-14:
+---------------------------
+* With the Option "Store &Passwords (protected, encrypted)" disabled SuRun 
+  did not start any Process...Thanks to A.H.Klein for reporting.
+
+SuRun 1.0.2.5 - 2007-09-05:
+---------------------------
+* Empty user passwords did not work in an out of the box Windows. Users 
+  were forced to use the policy editor to set "Accounts: Limit local 
+  account use of blank passwords to console logon only" to "Disabled".
+  Now SuRun temporarily sets this policy automatically to "Disabled" and 
+  after starting the administrative process SuRun restores the policy.
+
+SuRun 1.0.2.4 - 2007-08-31:
+---------------------------
+* SuRun has been translated to polish by sarmat, Thanks! :-)
+* Microsoft Installer Patch Files (*.msp) can be started with elevated rights
+
+SuRun 1.0.2.3 - 2007-08-18:
+---------------------------
+* SuRun now works with users that have an empty password
+
+SuRun 1.0.2.2 - 2007-07-30:
+---------------------------
+* Added SuRun Version display to setup dialog caption
+
+SuRun 1.0.2.1 - 2007-07-24:
+---------------------------
+* The way that SuRun checks a users group membership was changed
+* "surun ncpa.cpl" did not work
+* SuRun now reports detailed, why a user could not be added or removed to/from 
+  a user group
+* SuRun now assures that a "SuRunner" is NOT member of "Administrators"
+* SuRun now checks that a user is member of "Administrators" or "SuRunners" 
+  before launching setup
+* SuRun now starts/resumes the "Secondary Logon" service automatically
+* SuRun now complains if the windows shell is running as Administrator
+
+SuRun 1.0.2.0 - 2007-05-29:
+---------------------------
+* SuRun Setup now contains new options:
+   -Allow 'SuRunners' to set (and show) the system time
+   -Allow 'SuRunners' to change 'Power Options' and select power schemes
+   -Show Windows update notifications to all users
+   -No auto-restart for scheduled Automatic Windows Update installations
+   -Set 'Administrators' instead of 'Object creator' as default owner for 
+    ojects created by administrators
+  The last option is pretty important!
+
 SuRun 1.0.1.2 - 2007-05-16:
 ---------------------------
 * Sven (http://speedproject.de) found a bug in the context menu extension for 
@@ -106,7 +349,7 @@ SuRun 1.0.1.0 - 2007-05-11:
 * Logon dialogs are resized only if the command line is too long
 * Dialogs have a 40s Timeout to automatic "cancel"
 * SuRun retries to open the service pipe for 3 minutes. This is useful, when a 
-  user starts multiple apps in short intervalls. (e.g. from the StartUp menu)
+  user starts multiple apps in short intervals. (e.g. from the StartUp menu)
 
 SuRun 1.0.0.1 - 2007-05-09:
 ---------------------------
@@ -118,5 +361,5 @@ SuRun 1.0.0.0 - 2007-05-08:
 * first public release
 
 ==============================================================================
-                                    by Kay Bruns (c) 2007, http://kay-bruns.de
+                                 by Kay Bruns (c) 2007,08, http://kay-bruns.de
 ==============================================================================

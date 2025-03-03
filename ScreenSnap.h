@@ -3,13 +3,12 @@
 // This source code is part of SuRun
 //
 // Some sources in this project evolved from Microsoft sample code, some from 
-// other free sources. The Application icons are from Foood's "iCandy" icon 
-// set (http://www.iconaholic.com). the Shield Icons are taken from Windows XP 
-// Service Pack 2 (xpsp2res.dll) 
+// other free sources. The Shield Icons are taken from Windows XP Service Pack 
+// 2 (xpsp2res.dll) 
 // 
 // Feel free to use the SuRun sources for your liking.
 // 
-//                                   (c) Kay Bruns (http://kay-bruns.de), 2007
+//                                (c) Kay Bruns (http://kay-bruns.de), 2007,08
 //////////////////////////////////////////////////////////////////////////////
 
 //////////////////////////////////////////////////////////////////////////////
@@ -39,7 +38,7 @@ inline void Blur(HBITMAP hbm,int w,int h)
 {
   g_bmi32.bmiHeader.biHeight=h;
   g_bmi32.bmiHeader.biWidth=w;
-  g_bmi32.bmiHeader.biSizeImage=(w*h)<<2;
+  g_bmi32.bmiHeader.biSizeImage=((((w+3)/4)*4)*((h+3)/4)*4)*4;
   COLORREF* pSrc=(COLORREF*)malloc(g_bmi32.bmiHeader.biSizeImage); 
   if (pSrc==NULL)
     return;
@@ -50,7 +49,7 @@ inline void Blur(HBITMAP hbm,int w,int h)
     free(pSrc);
     return;
   }
-  COLORREF* pDst=(COLORREF*)calloc(w*h,4);
+  COLORREF* pDst=(COLORREF*)calloc(g_bmi32.bmiHeader.biSizeImage,1);
   if (pDst!=NULL)
   {
     for (int y=0;y<h;y++)
@@ -95,7 +94,10 @@ public:
   void Done()
   {
     if(m_hWnd)
+    {
+      SetWindowLongPtr(m_hWnd,GWLP_USERDATA,0);
       DestroyWindow(m_hWnd);
+    }
     m_hWnd=0;
     if (m_bm)
       DeleteObject(m_bm);
@@ -111,7 +113,7 @@ public:
     RegisterClass(&wc);
     m_hWnd=CreateWindowEx(WS_EX_TOOLWINDOW,wc.lpszClassName,_T("ScreenWnd"),
       WS_VISIBLE|WS_POPUP,0,0,m_dx,m_dy,0,0,wc.hInstance,0);
-    SetWindowLong(m_hWnd,GWL_USERDATA,(LONG)this);
+    SetWindowLongPtr(m_hWnd,GWLP_USERDATA,(LONG_PTR)this);
     InvalidateRect(m_hWnd,0,1);
     UpdateWindow(m_hWnd);
     MsgLoop();
@@ -130,9 +132,9 @@ public:
 private:
   static LRESULT CALLBACK WindowProc(HWND hWnd,UINT msg,WPARAM wParam,LPARAM lParam)
   {
-    CBlurredScreen* sw=(CBlurredScreen*)GetWindowLong(hWnd,GWL_USERDATA);
+    CBlurredScreen* sw=(CBlurredScreen*)GetWindowLongPtr(hWnd,GWLP_USERDATA);
     if (sw)
-      return ((CBlurredScreen*)GetWindowLong(hWnd,GWL_USERDATA))->WindowProc(msg,wParam,lParam);
+      return sw->WindowProc(msg,wParam,lParam);
     return DefWindowProc(hWnd,msg,wParam,lParam);
   }
   LRESULT CALLBACK WindowProc(UINT msg,WPARAM wParam,LPARAM lParam)
