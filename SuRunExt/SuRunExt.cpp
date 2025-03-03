@@ -404,6 +404,7 @@ STDMETHODIMP CShellExt::Initialize(LPCITEMIDLIST pIDFolder, LPDATAOBJECT pDataOb
   }else
   {
     FORMATETC fe = {CF_HDROP, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+    FORMATETC fe1 = {g_CF_ShellIdList, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
     STGMEDIUM m;
     if ((SUCCEEDED(pDataObj->GetData(&fe,&m)))
       &&(DragQueryFile((HDROP)m.hGlobal,(UINT)-1,NULL,0)==1)) 
@@ -412,6 +413,16 @@ STDMETHODIMP CShellExt::Initialize(LPCITEMIDLIST pIDFolder, LPDATAOBJECT pDataOb
       DragQueryFile((HDROP)m.hGlobal, 0, path, countof(path));
       if (PathIsDirectory(path))
         _tcscpy(m_ClickFolderName,path);
+      ReleaseStgMedium(&m);
+    }else if (SUCCEEDED(pDataObj->GetData(&fe1,&m)))
+    {
+      TCHAR s[4096]={0};
+      if (((LPIDA)m.hGlobal)->cidl==1)
+      {
+        LPCITEMIDLIST pidlItem0=(LPCITEMIDLIST)(((LPBYTE)m.hGlobal)+((LPIDA)m.hGlobal)->aoffset[1]);
+        if(SHGetPathFromIDList(pidlItem0,s))
+          _tcscpy(m_ClickFolderName,s);
+      }
       ReleaseStgMedium(&m);
     }
   } 
@@ -484,7 +495,7 @@ STDMETHODIMP CShellExt::InvokeCommand(LPCMINVOKECOMMANDINFO lpcmi)
       if (LOWORD(lpcmi->lpVerb)==0)
         _tcscat(cmd,L" cmd /D /T:4E /K cd /D ");
       else
-        _tcscat(cmd,L" explorer /e,");
+        _tcscat(cmd,L" explorer /e, ");
       PathQuoteSpaces(m_ClickFolderName);
       _tcscat(cmd,m_ClickFolderName);
     }
@@ -506,11 +517,11 @@ static CRITICAL_SECTION l_SxHkCs;
 //////////////////////////////////////////////////////////////////////////////
 STDMETHODIMP CShellExt::Execute(LPSHELLEXECUTEINFO pei)
 {
-  DBGTrace15("SuRun ShellExtHook: siz=%d, msk=%X wnd=%X, verb=%s, file=%s, parms=%s, "
-    L"dir=%s, nShow=%X, inst=%X, idlist=%X, class=%s, hkc=%X, hotkey=%X, hicon=%X, hProc=%X",
-    pei->cbSize,pei->fMask,pei->hwnd,pei->lpVerb,pei->lpFile,pei->lpParameters,
-    pei->lpDirectory,pei->nShow,pei->hInstApp,pei->lpIDList,pei->lpClass,
-    pei->hkeyClass,pei->dwHotKey,pei->hIcon,pei->hProcess);
+//  DBGTrace15("SuRun ShellExtHook: siz=%d, msk=%X wnd=%X, verb=%s, file=%s, parms=%s, "
+//    L"dir=%s, nShow=%X, inst=%X, idlist=%X, class=%s, hkc=%X, hotkey=%X, hicon=%X, hProc=%X",
+//    pei->cbSize,pei->fMask,pei->hwnd,pei->lpVerb,pei->lpFile,pei->lpParameters,
+//    pei->lpDirectory,pei->nShow,pei->hInstApp,pei->lpIDList,pei->lpClass,
+//    pei->hkeyClass,pei->dwHotKey,pei->hIcon,pei->hProcess);
   //Admins don't need the ShellExec Hook!
   if (IsAdmin())
     return S_FALSE;
@@ -597,7 +608,7 @@ STDMETHODIMP CShellExt::Execute(LPSHELLEXECUTEINFO pei)
   zero(rpi);
   _stprintf(&cmd[wcslen(cmd)],L" /QUIET /TESTAA %d %x %s",
     GetCurrentProcessId(),&rpi,tmp);
-  DBGTrace1("ShellExecuteHook AutoSuRun(%s) test",cmd);
+  //DBGTrace1("ShellExecuteHook AutoSuRun(%s) test",cmd);
   STARTUPINFO si;
   PROCESS_INFORMATION pi;
   ZeroMemory(&si, sizeof(si));
@@ -794,8 +805,8 @@ BOOL APIENTRY DllMain( HINSTANCE hInstDLL,DWORD dwReason,LPVOID lpReserved)
   if(dwReason==DLL_PROCESS_DETACH)
   {
 #ifdef _DEBUG
-    DBGTrace5("DLL_PROCESS_DETACH(hInst=%x) %d:%s[%s], Admin=%d",
-      hInstDLL,PID,fMod,GetCommandLine(),bAdmin);
+//    DBGTrace5("DLL_PROCESS_DETACH(hInst=%x) %d:%s[%s], Admin=%d",
+//      hInstDLL,PID,fMod,GetCommandLine(),bAdmin);
 #endif _DEBUG
     EnterCriticalSection(&l_SxHkCs);
     LeaveCriticalSection(&l_SxHkCs);
@@ -827,15 +838,15 @@ BOOL APIENTRY DllMain( HINSTANCE hInstDLL,DWORD dwReason,LPVOID lpReserved)
     PathAppend(fSuRunExe,L"SuRun.exe");
     PathQuoteSpaces(fSuRunExe);
     BOOL bSetHook=(!bAdmin)&&(_tcsicmp(fMod,fSuRunExe)!=0);
-    DBGTrace6("DLL_PROCESS_ATTACH(hInst=%x) %d:%s[%s], Admin=%d, SetHook=%d",
-      hInstDLL,PID,fMod,GetCommandLine(),bAdmin,bSetHook);
+//    DBGTrace6("DLL_PROCESS_ATTACH(hInst=%x) %d:%s[%s], Admin=%d, SetHook=%d",
+//      hInstDLL,PID,fMod,GetCommandLine(),bAdmin,bSetHook);
     if(bSetHook)
       LoadHooks();
   }
 #ifdef _DEBUG
-  else
-    DBGTrace5("DLL_PROCESS_ATTACH(hInst=%x) %d:%s[%s], Admin=%d",
-      hInstDLL,PID,fMod,GetCommandLine(),bAdmin);
+//  else
+//    DBGTrace5("DLL_PROCESS_ATTACH(hInst=%x) %d:%s[%s], Admin=%d",
+//      hInstDLL,PID,fMod,GetCommandLine(),bAdmin);
 #endif _DEBUG
   //DevInst
 //  if(!bAdmin)

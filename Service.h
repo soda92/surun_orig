@@ -31,13 +31,39 @@ typedef struct
   TCHAR WinSta[MAX_PATH];
   TCHAR Desk[MAX_PATH];
   TCHAR UserName[UNLEN+UNLEN+2];
-  TCHAR cmdLine[4096];
-  TCHAR CurDir[4096];
-  DWORD KillPID;
-  DWORD RetPID;
-  DWORD_PTR RetPtr;
-  BOOL  bShlExHook;
+  union
+  {
+    struct //Normal
+    {
+      TCHAR cmdLine[4096];
+      TCHAR CurDir[4096];
+    };
+    struct //TrayShowAdmin
+    {
+      DWORD CurProcId;
+      TCHAR CurUserName[UNLEN+GNLEN+2];
+      BOOL CurUserIsadmin;
+    };
+  };
+  DWORD KillPID; //SuRun->Service: Process Id to be killed
+  union
+  {
+    struct
+    {
+      DWORD RetPID;     //SuRun->Service: Return PROCESS_INFORMATION to this Porcess
+      DWORD_PTR RetPtr; //SuRun->Service: Return PROCESS_INFORMATION to this Address
+    };
+    struct
+    {
+      int IconId;       //Service->Tray Warning: ICON Resource Id
+      DWORD TimeOut;    //Service->Tray Window timeout
+    };
+  };
+  bool  bNoSafeDesk; //only valid with /SETUP
+  bool  bShlExHook;
   bool  beQuiet;
+  bool  bRunAs;
+  bool  bTrayShowAdmin;
 }RUNDATA;
 
 extern bool g_CliIsAdmin;

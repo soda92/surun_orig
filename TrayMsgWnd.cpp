@@ -29,7 +29,7 @@
 class CTrayMsgWnd
 {
 public:
-	CTrayMsgWnd(LPCTSTR DlgTitle,LPCTSTR Text);
+	CTrayMsgWnd(LPCTSTR DlgTitle,LPCTSTR Text,int IconId,DWORD TimeOut);
 	~CTrayMsgWnd();
   bool MsgLoop();
   HWND m_hWnd;
@@ -85,10 +85,10 @@ private:
 //
 /////////////////////////////////////////////////////////////////////////////
 
-CTrayMsgWnd::CTrayMsgWnd(LPCTSTR DlgTitle,LPCTSTR Text)
+CTrayMsgWnd::CTrayMsgWnd(LPCTSTR DlgTitle,LPCTSTR Text,int IconId,DWORD TimeOut)
 {
   LoadLibrary(_T("Shell32.dll"));//Load Shell Window Classes
-  m_Icon=(HICON)LoadImage(GetModuleHandle(0),MAKEINTRESOURCE(IDI_SHIELD),IMAGE_ICON,16,16,0);
+  m_Icon=(HICON)LoadImage(GetModuleHandle(0),MAKEINTRESOURCE(IconId),IMAGE_ICON,16,16,0);
 
   WM_SRTRMSGWNDCLOSED=RegisterWindowMessage(_T("WM_SRTRMSGWNDCLOSED"));
   WM_SRTRMSGWNDGETPOS=RegisterWindowMessage(_T("WM_SRTRMSGWNDGETPOS"));
@@ -152,7 +152,8 @@ CTrayMsgWnd::CTrayMsgWnd(LPCTSTR DlgTitle,LPCTSTR Text)
   s=CreateWindowEx(0,_T("Static"),Text,WS_CHILD|WS_VISIBLE|SS_NOPREFIX,
     cr.left,cr.top,cr.right-cr.left,cr.bottom-cr.top,m_hWnd,0,0,0);
   SendMessage(s,WM_SETFONT,(WPARAM)m_hFont,1);
-  SetTimer(m_hWnd,2,20000,0);
+  if (TimeOut)
+    SetTimer(m_hWnd,2,TimeOut,0);
   InvalidateRect(m_hWnd,0,1);
   UpdateWindow(m_hWnd);
   MsgLoop();
@@ -250,11 +251,11 @@ LRESULT CALLBACK CTrayMsgWnd::WinProc(UINT msg,WPARAM wParam,LPARAM lParam)
 //Public Message Functions:
 //
 /////////////////////////////////////////////////////////////////////////////
-void TrayMsgWnd(LPCTSTR DlgTitle,LPCTSTR Message)
+void TrayMsgWnd(LPCTSTR DlgTitle,LPCTSTR Message,int IconId,DWORD TimeOut)
 {
   if (!GetShowAutoRuns)
     return;
-  CTrayMsgWnd* w=new CTrayMsgWnd(DlgTitle,Message);
+  CTrayMsgWnd* w=new CTrayMsgWnd(DlgTitle,Message,IconId,TimeOut);
   int prio=GetThreadPriority(GetCurrentThread());
   SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_IDLE);
   while (w->MsgLoop())

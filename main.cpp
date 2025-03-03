@@ -22,6 +22,7 @@
 #include "Helpers.h"
 #include "ResStr.h"
 #include "Service.h"
+#include "Setup.h"
 #include "TrayMsgWnd.h"
 #include "DBGTrace.h"
 #include "UserGroups.h"
@@ -97,11 +98,6 @@ int Run()
   PathStripPath(un);
   _tcscpy(dn,g_RunData.UserName);
   PathRemoveFileSpec(dn);
-  //To start control Panel and other Explorer children we need to tell 
-  //Explorer to start a new Process:
-  SetRegInt(HKEY_CURRENT_USER,
-    L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
-    L"SeparateProcess",1);
   //Create the process suspended to revoke access for the current user 
   //before it starts runnung
   if(!CreateProcessWithLogonW(un,dn,g_RunPwd,LOGON_WITH_PROFILE,NULL,
@@ -109,41 +105,38 @@ int Run()
     g_RunData.CurDir,&si,&pi))
   {
     //Clear sensitive Data
-    zero(g_RunPwd);
-    return RETVAL_ACCESSDENIED;
-  }else
-  {
-    //Clear sensitive Data
-    zero(g_RunPwd);
-    //Allow access to the Process and Thread to the Administrators and deny 
-    //access for the current user
-    SetAdminDenyUserAccess(pi.hThread);
-    SetAdminDenyUserAccess(pi.hProcess);
-    //Start the main thread
-    ResumeThread(pi.hThread);
-    //Ok, we're done with the handles:
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-    //ShellExec-Hook: We must return the PID and TID to fake CreateProcess:
-    if((g_RunData.RetPID)&&(g_RunData.RetPtr))
-    {
-      pi.hThread=0;
-      pi.hProcess=0;
-      HANDLE hProcess=OpenProcess(PROCESS_VM_OPERATION|PROCESS_VM_WRITE,FALSE,g_RunData.RetPID);
-      if (hProcess)
-      {
-        SIZE_T n;
-        if (!WriteProcessMemory(hProcess,(LPVOID)g_RunData.RetPtr,&pi,sizeof(PROCESS_INFORMATION),&n))
-          DBGTrace2("AutoSuRun(%s) WriteProcessMemory failed: %s",
-            g_RunData.cmdLine,GetLastErrorNameStatic());
-        CloseHandle(hProcess);
-      }else
-        DBGTrace2("AutoSuRun(%s) OpenProcess failed: %s",
-          g_RunData.cmdLine,GetLastErrorNameStatic());
-    }
-    zero(g_RunData);
-    return RETVAL_OK;
+    return zero(g_RunPwd),RETVAL_ACCESSDENIED;
   }
+  //Clear sensitive Data
+  zero(g_RunPwd);
+  //Allow access to the Process and Thread to the Administrators and deny 
+  //access for the current user
+  SetAdminDenyUserAccess(pi.hThread);
+  SetAdminDenyUserAccess(pi.hProcess);
+  //Start the main thread
+  ResumeThread(pi.hThread);
+  //Ok, we're done with the handles:
+  CloseHandle(pi.hThread);
+  CloseHandle(pi.hProcess);
+  //ShellExec-Hook: We must return the PID and TID to fake CreateProcess:
+  if((g_RunData.RetPID)&&(g_RunData.RetPtr))
+  {
+    pi.hThread=0;
+    pi.hProcess=0;
+    HANDLE hProcess=OpenProcess(PROCESS_VM_OPERATION|PROCESS_VM_WRITE,FALSE,g_RunData.RetPID);
+    if (hProcess)
+    {
+      SIZE_T n;
+      if (!WriteProcessMemory(hProcess,(LPVOID)g_RunData.RetPtr,&pi,sizeof(PROCESS_INFORMATION),&n))
+        DBGTrace2("AutoSuRun(%s) WriteProcessMemory failed: %s",
+          g_RunData.cmdLine,GetLastErrorNameStatic());
+      CloseHandle(hProcess);
+    }else
+      DBGTrace2("AutoSuRun(%s) OpenProcess failed: %s",
+        g_RunData.cmdLine,GetLastErrorNameStatic());
+  }
+  zero(g_RunData);
+  return RETVAL_OK;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -169,7 +162,7 @@ int WINAPI WinMain(HINSTANCE hInst,HINSTANCE hPrevInst,LPSTR lpCmdLine,int nCmdS
   {
     //Started from services:
     //Show ToolTip "<Program> is running elevated"...
-    TrayMsgWnd(CResStr(IDS_APPNAME),CBigResStr(IDS_STARTED,g_RunData.cmdLine));
+    TrayMsgWnd(CResStr(IDS_APPNAME),g_RunData.cmdLine,g_RunData.IconId,g_RunData.TimeOut);
     return RETVAL_OK;
   }
   //ProcessId
@@ -200,6 +193,12 @@ int WINAPI WinMain(HINSTANCE hInst,HINSTANCE hPrevInst,LPSTR lpCmdLine,int nCmdS
     if (!_wcsicmp(c,L"/QUIET"))
     {
       g_RunData.beQuiet=TRUE;
+    }/*else if (!_wcsicmp(c,L"/UNSAFE"))
+    {
+      g_RunData.bNoSafeDesk=TRUE;
+    }*/if (!_wcsicmp(c,L"/RUNAS"))
+    {
+      g_RunData.bRunAs=TRUE;
     }else if (!_wcsicmp(c,L"/SETUP"))
     {
       bRunSetup=TRUE;
@@ -252,17 +251,24 @@ int WINAPI WinMain(HINSTANCE hInst,HINSTANCE hPrevInst,LPSTR lpCmdLine,int nCmdS
   //Lets go:
   g_RetVal=RETVAL_WAIT;
   HANDLE hPipe=INVALID_HANDLE_VALUE;
+  //To start control Panel and other Explorer children we need to tell 
+  //Explorer to start a new Process, because the Shell updates the state 
+  //from the registry and this cant' be forced to be done "now", the
+  //"SeparateProcess" registry value must be set early an remain set
+  SetSeparateProcess(1);
   //retry if the pipe is busy: (max 240s)
   for(int i=0;i<720;i++)
   {
     hPipe=CreateFile(ServicePipeName,GENERIC_WRITE,0,0,OPEN_EXISTING,0,0);
     if(hPipe!=INVALID_HANDLE_VALUE)
       break;
+    if ((GetLastError()==ERROR_FILE_NOT_FOUND)||(GetLastError()==ERROR_ACCESS_DENIED))
+      return RETVAL_ACCESSDENIED;
     Sleep(250);
   }
   //No Pipe handle: fail!
   if (hPipe==INVALID_HANDLE_VALUE)
-    return RETVAL_ACCESSDENIED;
+    return g_RunData.bShlExHook?RETVAL_SX_NOTINLIST:RETVAL_ACCESSDENIED;
   //For Vista! The Thread Desktop is not set per default...
   HDESK hDesk=OpenInputDesktop(0,FALSE,DESKTOP_SWITCHDESKTOP);
   DWORD nWritten=0;

@@ -12,7 +12,7 @@
 //////////////////////////////////////////////////////////////////////////////
 
 #ifdef _DEBUG
-//#define _DEBUGSETUP
+#define _DEBUGSETUP
 #endif _DEBUG
 
 #define _WIN32_WINNT 0x0500
@@ -23,6 +23,7 @@
 #include <tchar.h>
 #include <lm.h>
 #include <commctrl.h>
+#include <shlwapi.h>
 #include "Setup.h"
 #include "Helpers.h"
 #include "BlowFish.h"
@@ -35,6 +36,7 @@
 
 #pragma comment(lib,"comctl32.lib")
 #pragma comment(lib,"Comdlg32.lib")
+#pragma comment(lib,"shlwapi.lib")
 
 //////////////////////////////////////////////////////////////////////////////
 // 
@@ -138,11 +140,15 @@ BOOL ToggleWhiteListFlag(LPTSTR User,LPTSTR CmdLine,DWORD Flag)
     d&=~Flag;
     if (Flag==FLAG_DONTASK)
       d|=FLAG_AUTOCANCEL;
+    if (Flag==FLAG_SHELLEXEC)
+      d|=FLAG_CANCEL_SX;
   }
   else
   {
     if ((Flag==FLAG_DONTASK)&&(d&FLAG_AUTOCANCEL))
       d&=~FLAG_AUTOCANCEL;
+    else if ((Flag==FLAG_SHELLEXEC)&&(d&FLAG_CANCEL_SX))
+      d&=~FLAG_CANCEL_SX;
     else
       d|=Flag;
   }
@@ -152,6 +158,103 @@ BOOL ToggleWhiteListFlag(LPTSTR User,LPTSTR CmdLine,DWORD Flag)
 BOOL RemoveFromWhiteList(LPTSTR User,LPTSTR CmdLine)
 {
   return RegDelVal(HKLM,WHTLSTKEY(User),CmdLine);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// 
+//  Registry replace stuff
+// 
+//////////////////////////////////////////////////////////////////////////////
+void ReplaceRunAsWithSuRun(HKEY hKey/*=HKCR*/)
+{
+  TCHAR s[512];
+  DWORD i,nS;
+  for(i=0,nS=512;0==RegEnumKey(hKey,i,s,nS);nS=512,i++)
+  {
+    if (_tcsicmp(s,L"CLSID")==0)
+    {
+      HKEY h;
+      if(ERROR_SUCCESS==RegOpenKey(hKey,s,&h))
+        ReplaceRunAsWithSuRun(h);
+    }
+    else
+    {
+      TCHAR v[4096];
+      DWORD n=4096;
+      DWORD t=REG_SZ;
+      BOOL bOk=GetRegAny(hKey,CResStr(L"%s\\%s",s,L"shell\\runas\\command"),L"",t,(BYTE*)&v,&n);
+      //Preserve REG_EXPAND_SZ:
+      if (!bOk)
+      {
+        n=4096;
+        t=REG_EXPAND_SZ;
+        bOk=GetRegAny(hKey,CResStr(L"%s\\%s",s,L"shell\\runas\\command"),L"",t,(BYTE*)&v,&n);
+      }
+      if (bOk 
+        && RenameRegKey(hKey,CResStr(L"%s\\%s",s,L"shell\\runas"),CResStr(L"%s\\%s",s,L"shell\\RunAsSuRun")))
+      {
+        TCHAR cmd[4096];
+        GetSystemWindowsDirectory(cmd,4096);
+        PathAppend(cmd,L"SuRun.exe");
+        PathQuoteSpaces(cmd);
+        _tcscat(cmd,L" /RUNAS ");
+        _tcscat(cmd,v);
+        SetRegAny(hKey,CResStr(L"%s\\%s",s,L"shell\\RunAsSuRun"),L"SuRunWasHere",t,(BYTE*)&v,n);
+        SetRegAny(hKey,CResStr(L"%s\\%s",s,L"shell\\RunAsSuRun\\command"),L"",t,
+          (BYTE*)&cmd,(DWORD)_tcslen(cmd)*sizeof(TCHAR));
+        SetRegStr(hKey,CResStr(L"%s\\%s",s,L"shell\\RunAsSuRun"),L"",CResStr(IDS_RUNAS));
+      }
+    }
+  }
+}
+
+void ReplaceSuRunWithRunAs(HKEY hKey/*=HKCR*/)
+{
+  TCHAR s[512];
+  DWORD i,nS;
+  for(i=0,nS=512;0==RegEnumKey(hKey,i,s,nS);nS=512,i++)
+  {
+    if (_tcsicmp(s,L"CLSID")==0)
+    {
+      HKEY h;
+      if(ERROR_SUCCESS==RegOpenKey(hKey,s,&h))
+        ReplaceSuRunWithRunAs(h);
+    }
+    else
+    {
+      TCHAR v[4096];
+      DWORD n=4096;
+      DWORD t=REG_SZ;
+      BOOL bOk=GetRegAny(hKey,CResStr(L"%s\\%s",s,L"shell\\RunAsSuRun"),
+                         L"SuRunWasHere",t,(BYTE*)&v,&n);
+      //Preserve REG_EXPAND_SZ:
+      if (!bOk)
+      {
+        n=4096;
+        t=REG_EXPAND_SZ;
+        bOk=GetRegAny(hKey,CResStr(L"%s\\%s",s,L"shell\\RunAsSuRun"),L"SuRunWasHere",t,(BYTE*)&v,&n);
+      }
+      if ( bOk
+        && RegDelVal(hKey,CResStr(L"%s\\%s",s,L"shell\\RunAsSuRun"),L"SuRunWasHere")
+        && RenameRegKey(hKey,CResStr(L"%s\\%s",s,L"shell\\RunAsSuRun"),CResStr(L"%s\\%s",s,L"shell\\runas")))
+        SetRegAny(hKey,CResStr(L"%s\\%s",s,L"shell\\runas\\command"),L"",t,
+                  (BYTE*)&v,(DWORD)_tcslen(v)*sizeof(TCHAR));
+    }
+  }
+}
+
+//////////////////////////////////////////////////////////////////////////////
+// 
+//  IsWin2k
+// 
+//////////////////////////////////////////////////////////////////////////////
+
+bool IsWin2k()
+{
+  OSVERSIONINFO oie;
+  oie.dwOSVersionInfoSize=sizeof(oie);
+  GetVersionEx(&oie);
+  return (oie.dwMajorVersion==5)&&(oie.dwMinorVersion==0);
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -169,7 +272,7 @@ typedef struct _SETUPDATA
   HWND HelpWnd;
   int DlgExitCode;
   HIMAGELIST ImgList;
-  int ImgIconIdx[7];
+  int ImgIconIdx[8];
   TCHAR NewUser[2*UNLEN+2];
   _SETUPDATA()
   {
@@ -182,7 +285,7 @@ typedef struct _SETUPDATA
     UserIcon=(HICON)LoadImage(GetModuleHandle(0),MAKEINTRESOURCE(IDI_MAINICON),
         IMAGE_ICON,48,48,0);
     ImgList=ImageList_Create(16,16,ILC_COLOR8,7,1);
-    for (int i=0;i<7;i++)
+    for (int i=0;i<8;i++)
     {
       HICON icon=(HICON)LoadImage(GetModuleHandle(0),
         MAKEINTRESOURCE(IDI_LISTICON+i),IMAGE_ICON,0,0,0);
@@ -340,10 +443,10 @@ INT_PTR CALLBACK HelpDlgProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
 
 //////////////////////////////////////////////////////////////////////////////
 // 
-// Save Flags for the selected User
+// Add/Edit file to users file list:
 // 
 //////////////////////////////////////////////////////////////////////////////
-static BOOL GetFileName(HWND hwnd,LPTSTR FileName)
+static BOOL ChooseFile(HWND hwnd,LPTSTR FileName)
 {
   #define ExpAdvReg L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced"
   int HideExt=GetRegInt(HKCU,ExpAdvReg,L"HideFileExt",-1);
@@ -361,6 +464,90 @@ static BOOL GetFileName(HWND hwnd,LPTSTR FileName)
   if (HideExt!=-1)
     SetRegInt(HKCU,ExpAdvReg,L"HideFileExt",HideExt);
   return bRet;
+  #undef ExpAdvReg
+}
+
+struct
+{
+  DWORD* Flags;
+  LPTSTR FileName;
+}g_AppOpt;
+
+INT_PTR CALLBACK AppOptDlgProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
+{
+  switch(msg)
+  {
+  case WM_INITDIALOG:
+    SetDlgItemText(hwnd,IDC_FILENAME,g_AppOpt.FileName);
+    CheckDlgButton(hwnd,IDC_NOASK1,(*g_AppOpt.Flags&(FLAG_DONTASK|FLAG_AUTOCANCEL))==0);
+    CheckDlgButton(hwnd,IDC_NOASK2,(*g_AppOpt.Flags&FLAG_DONTASK)!=0);
+    CheckDlgButton(hwnd,IDC_NOASK3,(*g_AppOpt.Flags&FLAG_AUTOCANCEL)!=0);
+
+    CheckDlgButton(hwnd,IDC_AUTO1,(*g_AppOpt.Flags&(FLAG_SHELLEXEC|FLAG_CANCEL_SX))==0);
+    CheckDlgButton(hwnd,IDC_AUTO2,(*g_AppOpt.Flags&FLAG_SHELLEXEC)!=0);
+    CheckDlgButton(hwnd,IDC_AUTO3,(*g_AppOpt.Flags&FLAG_CANCEL_SX)!=0);
+
+    if((!IsDlgButtonChecked(g_SD->hTabCtrl[2],IDC_SHEXHOOK))
+      &&(!IsDlgButtonChecked(g_SD->hTabCtrl[2],IDC_IATHOOK)))
+    {
+      EnableWindow(GetDlgItem(hwnd,IDC_AUTO1),0);
+      EnableWindow(GetDlgItem(hwnd,IDC_AUTO2),0);
+      EnableWindow(GetDlgItem(hwnd,IDC_AUTO3),0);
+    }
+
+    CheckDlgButton(hwnd,IDC_RESTRICT1,(*g_AppOpt.Flags&FLAG_NORESTRICT)!=0);
+    CheckDlgButton(hwnd,IDC_RESTRICT2,(*g_AppOpt.Flags&FLAG_NORESTRICT)==0);
+    if(!IsDlgButtonChecked(g_SD->hTabCtrl[1],IDC_RESTRICTED))
+    {
+      EnableWindow(GetDlgItem(hwnd,IDC_RESTRICT1),0);
+      EnableWindow(GetDlgItem(hwnd,IDC_RESTRICT2),0);
+    }
+    return TRUE;
+  case WM_CTLCOLORSTATIC:
+    SetBkMode((HDC)wParam,TRANSPARENT);
+  case WM_CTLCOLORDLG:
+    return (BOOL)PtrToUlong(GetStockObject(WHITE_BRUSH));
+  case WM_COMMAND:
+    switch (wParam)
+    {
+    case MAKELPARAM(IDC_SELFILE,BN_CLICKED):
+      GetDlgItemText(hwnd,IDC_FILENAME,g_AppOpt.FileName,4096);
+      ChooseFile(hwnd,g_AppOpt.FileName);
+      SetDlgItemText(hwnd,IDC_FILENAME,g_AppOpt.FileName);
+      break;
+    case MAKELPARAM(IDCANCEL,BN_CLICKED):
+      EndDialog(hwnd,IDCANCEL);
+      return TRUE;
+    case MAKELPARAM(IDOK,BN_CLICKED):
+      GetDlgItemText(hwnd,IDC_FILENAME,g_AppOpt.FileName,4096);
+      *g_AppOpt.Flags=0;
+      if (IsDlgButtonChecked(hwnd,IDC_NOASK2))
+        *g_AppOpt.Flags|=FLAG_DONTASK;
+      if (IsDlgButtonChecked(hwnd,IDC_NOASK3))
+        *g_AppOpt.Flags|=FLAG_AUTOCANCEL;
+      if (IsDlgButtonChecked(hwnd,IDC_AUTO2))
+        *g_AppOpt.Flags|=FLAG_SHELLEXEC;
+      if (IsDlgButtonChecked(hwnd,IDC_AUTO3))
+        *g_AppOpt.Flags|=FLAG_CANCEL_SX;
+      if (IsDlgButtonChecked(hwnd,IDC_RESTRICT1))
+        *g_AppOpt.Flags|=FLAG_NORESTRICT;
+      EndDialog(hwnd,IDOK);
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+static BOOL GetFileName(HWND hwnd,DWORD& Flags,LPTSTR FileName)
+{
+  if (FileName[0]==0)
+  {
+    if(!ChooseFile(hwnd,FileName))
+      return FALSE;
+  }
+  g_AppOpt.FileName=FileName;
+  g_AppOpt.Flags=&Flags;
+  return DialogBox(GetModuleHandle(0),MAKEINTRESOURCE(IDD_APPOPTIONS),hwnd,AppOptDlgProc)==IDOK;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -372,10 +559,21 @@ static void SaveUserFlags()
 {
   if (g_SD->CurUser>=0)
   {
-    SetNoRunSetup(g_SD->Users.GetUserName(g_SD->CurUser),
-      IsDlgButtonChecked(g_SD->hTabCtrl[1],IDC_RUNSETUP)==0);
-    SetRestrictApps(g_SD->Users.GetUserName(g_SD->CurUser),
-      IsDlgButtonChecked(g_SD->hTabCtrl[1],IDC_RESTRICTED)!=0);
+    LPTSTR u=g_SD->Users.GetUserName(g_SD->CurUser);
+    SetNoRunSetup(u,IsDlgButtonChecked(g_SD->hTabCtrl[1],IDC_RUNSETUP)==0);
+    SetRestrictApps(u,IsDlgButtonChecked(g_SD->hTabCtrl[1],IDC_RESTRICTED)!=0);
+    switch (IsDlgButtonChecked(g_SD->hTabCtrl[1],IDC_TRAYSHOWADMIN))
+    {
+    case BST_INDETERMINATE:
+      DelUserTSA(u);
+      break;
+    case BST_UNCHECKED:
+      SetUserTSA(u,0);
+      break;
+    case BST_CHECKED:
+      SetUserTSA(u,1+(DWORD)(IsDlgButtonChecked(g_SD->hTabCtrl[1],IDC_TRAYBALLOON)!=0));
+      break;
+    }
   }
 }
 
@@ -406,7 +604,7 @@ static void UpdateWhiteListFlags(HWND hWL)
       0,0};
     ListView_SetItem(hWL,&item);
     item.iSubItem=1;
-    item.iImage=g_SD->ImgIconIdx[(Flags&FLAG_SHELLEXEC?0:1)];
+    item.iImage=g_SD->ImgIconIdx[(Flags&FLAG_SHELLEXEC?0:1)+(Flags&FLAG_CANCEL_SX?6:0)];
     ListView_SetItem(hWL,&item);
     item.iSubItem=2;
     item.iImage=g_SD->ImgIconIdx[4+(Flags&FLAG_NORESTRICT?0:1)];
@@ -438,21 +636,41 @@ static void UpdateUser(HWND hwnd)
   ListView_DeleteAllItems(hWL);
   if (n!=CB_ERR)
   {
+    LPTSTR u=g_SD->Users.GetUserName(g_SD->CurUser);
     bm=g_SD->Users.GetUserBitmap(n);
     EnableWindow(GetDlgItem(hwnd,IDC_USER),1);
     EnableWindow(GetDlgItem(hwnd,IDC_DELUSER),1);
-    EnableWindow(GetDlgItem(hwnd,IDC_RESTRICTED),true);
-    CheckDlgButton(hwnd,IDC_RUNSETUP,!GetNoRunSetup(g_SD->Users.GetUserName(n)));
-    EnableWindow(GetDlgItem(hwnd,IDC_RUNSETUP),true);
-    CheckDlgButton(hwnd,IDC_RESTRICTED,GetRestrictApps(g_SD->Users.GetUserName(n)));
+    EnableWindow(GetDlgItem(hwnd,IDC_RESTRICTED),1);
+    CheckDlgButton(hwnd,IDC_RUNSETUP,!GetNoRunSetup(u));
+    EnableWindow(GetDlgItem(hwnd,IDC_RUNSETUP),1);
+    CheckDlgButton(hwnd,IDC_RESTRICTED,GetRestrictApps(u));
+    //TSA:
+    //Win2k:no balloon tips
+    EnableWindow(GetDlgItem(hwnd,IDC_TRAYSHOWADMIN),1);
+    EnableWindow(GetDlgItem(hwnd,IDC_TRAYBALLOON),0);
+    CheckDlgButton(hwnd,IDC_TRAYBALLOON,BST_UNCHECKED);
+    CheckDlgButton(hwnd,IDC_TRAYSHOWADMIN,BST_INDETERMINATE);
+    switch(GetUserTSA(u))
+    {
+    case 2:
+      CheckDlgButton(hwnd,IDC_TRAYBALLOON,BST_CHECKED);
+    case 1:
+      if (!IsWin2k())
+        EnableWindow(GetDlgItem(hwnd,IDC_TRAYBALLOON),1);
+      CheckDlgButton(hwnd,IDC_TRAYSHOWADMIN,BST_CHECKED);
+      break;
+    case 0:
+      CheckDlgButton(hwnd,IDC_TRAYSHOWADMIN,BST_UNCHECKED);
+    }
     EnableWindow(hWL,true);
-    CBigResStr wlkey(_T("%s\\%s"),SVCKEY,g_SD->Users.GetUserName(n));
+    CBigResStr wlkey(_T("%s\\%s"),SVCKEY,u);
     TCHAR cmd[4096];
     for (int i=0;RegEnumValName(HKLM,wlkey,i,cmd,4096);i++)
     {
       LVITEM item={LVIF_IMAGE,i,0,0,0,0,0,g_SD->ImgIconIdx[0],0,0};
       ListView_SetItemText(hWL,ListView_InsertItem(hWL,&item),3,cmd);
     }
+
     ListView_SortItemsEx(hWL,ListSortProc,hWL);
     UpdateWhiteListFlags(hWL);
 
@@ -465,6 +683,8 @@ static void UpdateUser(HWND hwnd)
     EnableWindow(GetDlgItem(hwnd,IDC_DELUSER),false);
     EnableWindow(GetDlgItem(hwnd,IDC_RESTRICTED),false);
     EnableWindow(GetDlgItem(hwnd,IDC_RUNSETUP),false);
+    EnableWindow(GetDlgItem(hwnd,IDC_TRAYSHOWADMIN),false);
+    EnableWindow(GetDlgItem(hwnd,IDC_TRAYBALLOON),false);
     EnableWindow(hWL,false);
     EnableWindow(GetDlgItem(hwnd,IDC_ADDAPP),false);
     EnableWindow(GetDlgItem(hwnd,IDC_DELETE),false);
@@ -520,8 +740,29 @@ INT_PTR CALLBACK SetupDlg1Proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
       SendDlgItemMessage(hwnd,IDC_ASKTIMEOUT,EM_LIMITTEXT,2,0);
       SetDlgItemInt(hwnd,IDC_ASKTIMEOUT,GetPwTimeOut,0);
       CheckDlgButton(hwnd,IDC_BLURDESKTOP,GetBlurDesk);
+      CheckDlgButton(hwnd,IDC_FADEDESKTOP,GetFadeDesk);
+      EnableWindow(GetDlgItem(hwnd,IDC_FADEDESKTOP),(!IsWin2k())&&GetBlurDesk);
+      
       CheckDlgButton(hwnd,IDC_SAVEPW,GetSavePW);
       EnableWindow(GetDlgItem(hwnd,IDC_ASKTIMEOUT),GetSavePW);
+      
+      HKEY kra=0;
+      HKEY ksu=0;
+      if (0==RegOpenKey(HKCR,L"exefile\\shell\\runas\\command",&kra))
+        RegCloseKey(kra);
+      if (0==RegOpenKey(HKCR,L"exefile\\shell\\RunAsSuRun\\command",&ksu))
+        RegCloseKey(ksu);
+      UINT bCheck=BST_INDETERMINATE;
+      if((kra!=0)&&(ksu==0))
+        bCheck=BST_UNCHECKED;
+      else if((kra==0)&&(ksu!=0))
+        bCheck=BST_CHECKED;
+      CheckDlgButton(hwnd,IDC_DORUNAS,bCheck);
+      
+      HWND cb=GetDlgItem(hwnd,IDC_WARNADMIN);
+      for (int i=0;i<5;i++)
+        ComboBox_InsertString(cb,i,CResStr(IDS_WARNADMIN+i));
+      ComboBox_SetCurSel(cb,GetAdminNoPassWarn);
 
       CheckDlgButton(hwnd,IDC_CTRLASADMIN,GetCtrlAsAdmin);
       CheckDlgButton(hwnd,IDC_CMDASADMIN,GetCmdAsAdmin);
@@ -545,18 +786,26 @@ INT_PTR CALLBACK SetupDlg1Proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
     {
       switch (wParam)
       {
+      case MAKELPARAM(IDC_BLURDESKTOP,BN_CLICKED):
+        EnableWindow(GetDlgItem(hwnd,IDC_FADEDESKTOP),(!IsWin2k())&& IsDlgButtonChecked(hwnd,IDC_BLURDESKTOP));
+        return TRUE;
       case MAKELPARAM(IDC_SAVEPW,BN_CLICKED):
         EnableWindow(GetDlgItem(hwnd,IDC_ASKTIMEOUT),IsDlgButtonChecked(hwnd,IDC_SAVEPW));
         return TRUE;
+      case MAKELPARAM(ID_APPLY,BN_CLICKED):
+        goto ApplyChanges;
       }//switch (wParam)
       break;
     }//WM_COMMAND
   case WM_DESTROY:
     if (g_SD->DlgExitCode==IDOK) //User pressed OK, save settings
     {
+ApplyChanges:
       SetBlurDesk(IsDlgButtonChecked(hwnd,IDC_BLURDESKTOP));
+      SetFadeDesk(IsDlgButtonChecked(hwnd,IDC_FADEDESKTOP));
       SetSavePW(IsDlgButtonChecked(hwnd,IDC_SAVEPW));
       SetPwTimeOut(GetDlgItemInt(hwnd,IDC_ASKTIMEOUT,0,1));
+      SetAdminNoPassWarn(ComboBox_GetCurSel(GetDlgItem(hwnd,IDC_WARNADMIN)));
       
       SetCtrlAsAdmin(IsDlgButtonChecked(hwnd,IDC_CTRLASADMIN));
       SetCmdAsAdmin(IsDlgButtonChecked(hwnd,IDC_CMDASADMIN));
@@ -572,6 +821,16 @@ INT_PTR CALLBACK SetupDlg1Proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
       SetWinUpd4All(IsDlgButtonChecked(hwnd,IDC_WINUPD4ALL));
       SetWinUpdBoot(IsDlgButtonChecked(hwnd,IDC_WINUPDBOOT));
       SetOwnerAdminGrp(IsDlgButtonChecked(hwnd,IDC_OWNERGROUP));
+
+      switch (IsDlgButtonChecked(hwnd,IDC_DORUNAS))
+      {
+      case BST_CHECKED:
+        ReplaceRunAsWithSuRun();
+        break;
+      case BST_UNCHECKED:
+        ReplaceSuRunWithRunAs();
+        break;
+      }
       return TRUE;
     }//WM_DESTROY
   }
@@ -646,6 +905,7 @@ INT_PTR CALLBACK SetupDlg2Proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
       //Edit Button
       case MAKELPARAM(IDC_EDITAPP,BN_CLICKED):
         {
+EditApp:
           HWND hWL=GetDlgItem(hwnd,IDC_WHITELIST);
           int CurSel=(int)ListView_GetSelectionMark(hWL);
           if (CurSel>=0)
@@ -654,10 +914,10 @@ INT_PTR CALLBACK SetupDlg2Proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
             TCHAR CMD[4096];
             ListView_GetItemText(hWL,CurSel,3,cmd,4096);
             _tcscpy(CMD,cmd);
-            if (GetFileName(hwnd,CMD))
+            LPTSTR u=g_SD->Users.GetUserName(g_SD->CurUser);
+            DWORD f=GetWhiteListFlags(u,cmd,0);
+            if (GetFileName(hwnd,f,CMD))
             {
-              LPTSTR u=g_SD->Users.GetUserName(g_SD->CurUser);
-              DWORD f=GetWhiteListFlags(u,cmd,0);
               if (RemoveFromWhiteList(u,cmd))
               {
                 if (AddToWhiteList(u,CMD,f))
@@ -711,9 +971,10 @@ INT_PTR CALLBACK SetupDlg2Proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
       case MAKELPARAM(IDC_ADDAPP,BN_CLICKED):
         {
           TCHAR cmd[4096]={0};
-          if (GetFileName(hwnd,cmd))
+          DWORD f=0;
+          if (GetFileName(hwnd,f,cmd))
           {
-            if(AddToWhiteList(g_SD->Users.GetUserName(g_SD->CurUser),cmd,0))
+            if(AddToWhiteList(g_SD->Users.GetUserName(g_SD->CurUser),cmd,f))
             {
               HWND hWL=GetDlgItem(hwnd,IDC_WHITELIST);
               LVITEM item={LVIF_IMAGE,0,0,0,0,0,0,g_SD->ImgIconIdx[0],0,0};
@@ -752,6 +1013,13 @@ INT_PTR CALLBACK SetupDlg2Proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
             ListView_GetSelectionMark(hWL)!=-1);
         }
         return TRUE;
+      case MAKELPARAM(ID_APPLY,BN_CLICKED):
+        goto ApplyChanges;
+      case MAKELPARAM(IDC_TRAYSHOWADMIN,BN_CLICKED):
+        if (!IsWin2k())
+          EnableWindow(GetDlgItem(hwnd,IDC_TRAYBALLOON),
+            IsDlgButtonChecked(hwnd,IDC_TRAYSHOWADMIN)==BST_CHECKED);
+        return TRUE;
       }//switch (wParam)
       break;
     }//WM_COMMAND
@@ -759,7 +1027,7 @@ INT_PTR CALLBACK SetupDlg2Proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
     {
       switch (wParam)
       {
-      //Program List Notofications
+      //Program List Notifications
       case IDC_WHITELIST:
         if (lParam) switch(((LPNMHDR)lParam)->code)
         {
@@ -771,8 +1039,10 @@ INT_PTR CALLBACK SetupDlg2Proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
             ListView_GetSelectionMark(GetDlgItem(hwnd,IDC_WHITELIST))!=-1);
           return TRUE;
         //Mouse Click: Toggle Flags
-        case NM_CLICK:
         case NM_DBLCLK:
+          if(((LPNMITEMACTIVATE)lParam)->iSubItem>2)
+            goto EditApp;
+        case NM_CLICK:
           {
             LPNMITEMACTIVATE p=(LPNMITEMACTIVATE)lParam;
             int Flag=0;
@@ -804,6 +1074,7 @@ INT_PTR CALLBACK SetupDlg2Proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
     g_SD->HelpWnd=0;
     //if (g_SD->DlgExitCode==IDOK)
     {
+ApplyChanges:
       SaveUserFlags();
       return TRUE;
     }//WM_DESTROY
@@ -829,6 +1100,19 @@ INT_PTR CALLBACK SetupDlg3Proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
       CheckDlgButton(hwnd,IDC_NOCONVUSER,GetNoConvUser);
       CheckDlgButton(hwnd,IDC_RESTRICTNEW,GetRestrictNew);
       CheckDlgButton(hwnd,IDC_NOSETUPNEW,GetNoSetupNew);
+
+      HWND cb=GetDlgItem(hwnd,IDC_TRAYSHOWADMIN);
+      DWORD tsa=GetShowTrayAdmin;
+      ComboBox_InsertString(cb,0,CResStr(IDS_WARNADMIN5));//No users
+      ComboBox_InsertString(cb,1,CResStr(IDS_WARNADMIN)); //"All users"
+      ComboBox_InsertString(cb,2,CResStr(IDS_WARNADMIN4));//"Administrators"
+      ComboBox_SetCurSel(cb,tsa & (~TSA_TIPS));
+      CheckDlgButton(hwnd,IDC_TRAYBALLOON,(tsa&TSA_TIPS)!=0);
+      if (IsWin2k())
+        //Win2k:no balloon tips
+        EnableWindow(GetDlgItem(hwnd,IDC_TRAYBALLOON),0);
+      else
+        EnableWindow(GetDlgItem(hwnd,IDC_TRAYBALLOON),(tsa&(~TSA_TIPS))!=0);
       return TRUE;
     }//WM_INITDIALOG
   case WM_CTLCOLORSTATIC:
@@ -838,6 +1122,7 @@ INT_PTR CALLBACK SetupDlg3Proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
   case WM_DESTROY:
     if (g_SD->DlgExitCode==IDOK) //User pressed OK, save settings
     {
+ApplyChanges:
       SetUseIShExHook(IsDlgButtonChecked(hwnd,IDC_SHEXHOOK));
       SetUseIATHook(IsDlgButtonChecked(hwnd,IDC_IATHOOK));
       SetShowAutoRuns(IsDlgButtonChecked(hwnd,IDC_SHOWTRAY));
@@ -845,16 +1130,28 @@ INT_PTR CALLBACK SetupDlg3Proc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam)
       SetNoConvUser(IsDlgButtonChecked(hwnd,IDC_NOCONVUSER));
       SetRestrictNew(IsDlgButtonChecked(hwnd,IDC_RESTRICTNEW));
       SetNoSetupNew(IsDlgButtonChecked(hwnd,IDC_NOSETUPNEW));
+
+      DWORD tsa=ComboBox_GetCurSel(GetDlgItem(hwnd,IDC_TRAYSHOWADMIN));
+      if (IsDlgButtonChecked(hwnd,IDC_TRAYBALLOON))
+        tsa|=TSA_TIPS;
+      SetShowTrayAdmin(tsa);
       return TRUE;
     }//WM_DESTROY
   case WM_COMMAND:
     {
       switch (wParam)
       {
+      case MAKELPARAM(IDC_TRAYSHOWADMIN,CBN_SELCHANGE):
+        if (!IsWin2k())
+          EnableWindow(GetDlgItem(hwnd,IDC_TRAYBALLOON),
+            ComboBox_GetCurSel(GetDlgItem(hwnd,IDC_TRAYSHOWADMIN))>0);
+        return TRUE;
       case MAKELPARAM(IDC_IATHOOK,BN_CLICKED):
       case MAKELPARAM(IDC_SHEXHOOK,BN_CLICKED):
         UpdateWhiteListFlags(GetDlgItem(g_SD->hTabCtrl[1],IDC_WHITELIST));
         return TRUE;
+      case MAKELPARAM(ID_APPLY,BN_CLICKED):
+        goto ApplyChanges;
       }
     }
   }
@@ -937,15 +1234,19 @@ INT_PTR CALLBACK MainSetupDlgProc(HWND hwnd,UINT msg,WPARAM wParam,LPARAM lParam
     {
       switch (wParam)
       {
+      case MAKELPARAM(ID_APPLY,BN_CLICKED):
+        SendMessage(
+          g_SD->hTabCtrl[TabCtrl_GetCurSel(GetDlgItem(hwnd,IDC_SETUP_TAB))],
+          WM_COMMAND,wParam,lParam);
+        break;
       case MAKELPARAM(IDCANCEL,BN_CLICKED):
+        g_SD->DlgExitCode=IDCANCEL;
         EndDialog(hwnd,0);
         return TRUE;
       case MAKELPARAM(IDOK,BN_CLICKED):
-        {
-          g_SD->DlgExitCode=IDOK;
-          EndDialog(hwnd,1);
-          return TRUE;
-        }
+        g_SD->DlgExitCode=IDOK;
+        EndDialog(hwnd,1);
+        return TRUE;
       }//switch (wParam)
       break;
     }//WM_COMMAND
@@ -970,21 +1271,9 @@ BOOL TestSetup()
 {
   INITCOMMONCONTROLSEX icce={sizeof(icce),ICC_USEREX_CLASSES|ICC_WIN95_CLASSES};
   InitCommonControlsEx(&icce);
-  //Every "secure" Desktop has its own name:
-  //Create the new desktop
-  CRunOnNewDeskTop crond(L"WinSta0",L"Default",GetBlurDesk);
-  CStayOnDeskTop csod(L"Default");
-  if (!crond.IsValid())    
-  {
-    SafeMsgBox(0,CBigResStr(IDS_NODESK),CResStr(IDS_APPNAME),MB_ICONSTOP|MB_SERVICE_NOTIFICATION);
-    return FALSE;
-  }
-  
   SetThreadLocale(MAKELCID(MAKELANGID(LANG_GERMAN,SUBLANG_GERMAN),SORT_DEFAULT));
   if (!RunSetup())
     DBGTrace1("DialogBox failed: %s",GetLastErrorNameStatic());
-  
-  ExitProcess(0);
   
   SetThreadLocale(MAKELCID(MAKELANGID(LANG_ENGLISH,SUBLANG_ENGLISH_US),SORT_DEFAULT));
   if (!RunSetup())
